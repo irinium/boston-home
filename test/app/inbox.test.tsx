@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import * as WebBrowser from 'expo-web-browser';
 import { Alert } from 'react-native';
 
-import { cancelMeeting, displayNames, myMeetings, myRequests, respondToRequest } from '@/lib/api';
+import { ApiError, cancelMeeting, displayNames, joinMeeting, myMeetings, myRequests, respondToRequest } from '@/lib/api';
 import type { ConnectionRequest } from '@/lib/types';
 
 import { ME, signIn } from '../auth-mock';
@@ -9,7 +10,13 @@ import { mockRouter } from '../expo-router-mock';
 import InboxScreen from '@/app/inbox';
 
 jest.mock('@/providers/auth', () => require('../auth-mock'));
-jest.mock('@/lib/api');
+jest.mock('@/lib/api', () => {
+  const actual = jest.requireActual('@/lib/api');
+  const mocked = jest.createMockFromModule<typeof actual>('@/lib/api');
+  return { ...mocked, ApiError: actual.ApiError };
+});
+jest.mock('@/lib/supabase', () => ({ supabase: {} }));
+jest.mock('expo-web-browser', () => ({ openBrowserAsync: jest.fn() }));
 
 const req = (over: Partial<ConnectionRequest>): ConnectionRequest => ({
   id: 'r1',
@@ -114,4 +121,66 @@ it('shows an empty state when loading fails', async () => {
   (myMeetings as jest.Mock).mockRejectedValue(new Error('offline'));
   await render(<InboxScreen />);
   expect(await screen.findByText('No requests yet.')).toBeOnTheScreen();
+});
+
+describe('joining a video meeting', () => {
+  const soon = () => ({
+    id: 'm9',
+    request_id: 'r2',
+    owner_id: 'owner-2',
+    requester_id: ME,
+    starts_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    ends_at: new Date(Date.now() + 35 * 60_000).toISOString(),
+    status: 'scheduled' as const,
+  });
+
+  async function pressJoinAndConfirm(alert: jest.SpyInstance) {
+    await fireEvent.press(await screen.findByText('Join'));
+    expect(alert.mock.calls[0][0]).toBe('Before the call');
+    const buttons = alert.mock.calls[0][2];
+    await act(async () => buttons[1].onPress());
+  }
+
+  it('shows a safety note, then opens the private room', async () => {
+    (myMeetings as jest.Mock).mockResolvedValue([soon()]);
+    (joinMeeting as jest.Mock).mockResolvedValue('https://x.daily.co/bh?t=1');
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    await render(<InboxScreen />);
+    await pressJoinAndConfirm(alert);
+    expect(joinMeeting).toHaveBeenCalledWith('m9');
+    expect(WebBrowser.openBrowserAsync).toHaveBeenCalledWith('https://x.daily.co/bh?t=1');
+  });
+
+  it.each([
+    ['too_early', /not open yet/],
+    ['video_unavailable', /video service is unavailable/],
+    ['weird', /Something went wrong/],
+  ])('explains a %s error', async (code, text) => {
+    (myMeetings as jest.Mock).mockResolvedValue([soon()]);
+    (joinMeeting as jest.Mock).mockRejectedValue(new ApiError(code));
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+    await render(<InboxScreen />);
+    await pressJoinAndConfirm(alert);
+    expect(alert.mock.calls[1][0]).toMatch(text);
+  });
+
+  it('hides meetings that are over and opens Join when the time comes', async () => {
+    jest.useFakeTimers({ now: Date.now(), doNotFake: ['nextTick', 'setImmediate'] });
+    const old = { ...soon(), id: 'old', starts_at: new Date(Date.now() - 13 * 3_600_000).toISOString() };
+    const later = { ...soon(), starts_at: new Date(Date.now() + 11 * 60_000).toISOString() };
+    (myMeetings as jest.Mock).mockResolvedValue([old, later]);
+    await render(<InboxScreen />);
+    expect(await screen.findByText(/opens 10 minutes before/)).toBeOnTheScreen();
+    expect(screen.getAllByText('Cancel meeting')).toHaveLength(1);
+    await act(async () => jest.advanceTimersByTime(60_000));
+    expect(screen.getByText('Join')).toBeOnTheScreen();
+    jest.useRealTimers();
+  });
+
+  it('says when the room opens for later meetings', async () => {
+    (myMeetings as jest.Mock).mockResolvedValue([{ ...soon(), starts_at: new Date(Date.now() + 3_600_000).toISOString() }]);
+    await render(<InboxScreen />);
+    expect(await screen.findByText(/opens 10 minutes before/)).toBeOnTheScreen();
+    expect(screen.queryByText('Join')).toBeNull();
+  });
 });

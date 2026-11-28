@@ -23,8 +23,8 @@ exception when others then
   reset role;
   return sqlerrm;
 end $$;
-grant usage on schema t to anon, authenticated;
-grant execute on all functions in schema t to anon, authenticated;
+grant usage on schema t to anon, authenticated, service_role;
+grant execute on all functions in schema t to anon, authenticated, service_role;
 
 -- Fixed ids
 insert into auth.users (id, created_at) values
@@ -92,7 +92,7 @@ select t.ok(t.err('authenticated', $q$
 $q$) is null, 'unverified account can prepare a draft');
 
 create temp table seen (n int);
-grant all on seen to anon, authenticated;
+grant all on seen to anon, authenticated, service_role;
 select t.err('authenticated', 'insert into seen select count(*) from public.listings');
 select t.ok((select n from seen) = 1, 'unverified account sees only her own listing directly');
 truncate seen;
@@ -319,4 +319,60 @@ update public.app_settings set selfie_verification_required = true;
 select t.ok(not public.is_trusted('00000000-0000-0000-0000-000000000001'), 'with the selfie check on, a photo alone is not enough');
 select t.ok(public.is_trusted('00000000-0000-0000-0000-000000000002'), 'with the selfie check on, verified members stay trusted');
 update public.app_settings set selfie_verification_required = false;
+-- ---------------------------------------------------------------- joining a video meeting
+reset role;
+create temp table jm as
+  select id from public.meetings where requester_id = '00000000-0000-0000-0000-00000000000b' and status = 'scheduled';
+grant select on jm to authenticated, service_role;
+select t.ok((select count(*) from jm) = 1, 'one scheduled meeting to join');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('authenticated', $q$ select * from public.meeting_for_join((select id from jm), auth.uid()) $q$)
+  like '%permission denied%', 'clients cannot call meeting_for_join directly');
+
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%too_early%', 'the room does not open days before the start');
+
+reset role;
+update public.meetings set starts_at = now() + interval '5 minutes', ends_at = now() + interval '35 minutes' where id = (select id from jm);
+select t.err('service_role', $q$ insert into seen select length(room_name) from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$);
+select t.ok((select n from seen) = 35, 'a participant gets a random room name 10 minutes before the start');
+truncate seen;
+select t.ok((select video_room_name from public.meetings where id = (select id from jm)) like 'bh-%', 'the room name is stored');
+select t.ok(t.err('service_role', $q$
+  do $d$ begin
+    if (select room_name from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-000000000001'))
+       is distinct from (select video_room_name from public.meetings where id = (select id from jm)) then
+      raise exception 'different room';
+    end if;
+  end $d$ $q$) is null, 'the other participant joins the same room');
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-000000000002') $q$)
+  like '%meeting_not_found%', 'strangers cannot join');
+
+update public.meetings set starts_at = now() - interval '13 hours', ends_at = now() - interval '12 hours 30 minutes' where id = (select id from jm);
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%meeting_over%', 'the room cannot be joined 12 hours after the start');
+
+update public.meetings set starts_at = now(), ends_at = now() + interval '30 minutes' where id = (select id from jm);
+insert into public.blocks (blocker_id, blocked_id) values ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%meeting_not_active%', 'a block closes the meeting room');
+
+reset role;
+select t.ok((select status from public.meetings where id = (select id from jm)) = 'cancelled', 'the block cancelled the meeting');
+select t.ok(exists (select 1 from public.video_room_closures v join public.meetings m on m.video_room_name = v.room_name
+  where m.id = (select id from jm) and v.closed_at is null), 'and queued its video room for closing');
+select t.ok(t.err('authenticated', $q$ select * from public.video_room_closures $q$) like '%permission denied%',
+  'clients cannot read the closure queue');
+
+insert into public.meetings (request_id, owner_id, requester_id, starts_at, ends_at, status, video_room_name)
+  select request_id, owner_id, requester_id, now() + interval '1 day', now() + interval '1 day 1 hour', 'scheduled', 'bh-suspension-test'
+  from public.meetings where id = (select id from jm);
+update public.profiles set is_suspended = true where id = '00000000-0000-0000-0000-00000000000b';
+select t.ok((select status from public.meetings where video_room_name = 'bh-suspension-test') = 'cancelled',
+  'a suspension cancels her scheduled meetings');
+select t.ok(exists (select 1 from public.video_room_closures where room_name = 'bh-suspension-test'),
+  'and closes their rooms');
+update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
+
 \echo 'all database tests passed'

@@ -6,8 +6,18 @@ module.exports = {
   testTimeout: 15000,
   setupFilesAfterEnv: ['<rootDir>/test/setup.ts'],
   // Screen tests live outside src/app, because Expo Router treats every file there as a route.
-  testMatch: ['<rootDir>/src/**/*.test.{ts,tsx}', '<rootDir>/test/**/*.test.{ts,tsx}'],
-  collectCoverageFrom: ['src/**/*.{ts,tsx}', '!src/**/*.test.{ts,tsx}', '!src/lib/types.ts'],
+  testMatch: [
+    '<rootDir>/src/**/*.test.{ts,tsx}',
+    '<rootDir>/test/**/*.test.{ts,tsx}',
+    '<rootDir>/supabase/functions/_shared/**/*.test.ts',
+  ],
+  collectCoverageFrom: [
+    'src/**/*.{ts,tsx}',
+    'supabase/functions/_shared/**/*.ts',
+    '!**/*.test.{ts,tsx}',
+    '!src/lib/types.ts',
+    '!src/**/*.d.ts',
+  ],
   coverageReporters: ['text', 'text-summary', 'lcov'],
   coverageThreshold: {
     global: { statements: 80, branches: 80, functions: 80, lines: 80 },

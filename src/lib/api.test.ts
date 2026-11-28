@@ -10,6 +10,7 @@ import {
   displayNames,
   cancelMeeting,
   deleteSlot,
+  joinMeeting,
   myMeetings,
   updateProfile,
   blockUser,
@@ -316,6 +317,23 @@ describe('availability and meetings', () => {
     expect(rpc).toHaveBeenCalledWith('bookable_starts', { p_request_id: 'r1', p_minutes: 60 });
     rpc.mockResolvedValue({ data: null, error: null });
     await expect(bookableStarts('r1')).resolves.toEqual([]);
+  });
+});
+
+describe('joinMeeting', () => {
+  it('returns the room link', async () => {
+    invoke.mockResolvedValue({ data: { url: 'https://x.daily.co/bh?t=1' }, error: null });
+    await expect(joinMeeting('m1')).resolves.toBe('https://x.daily.co/bh?t=1');
+    expect(invoke).toHaveBeenCalledWith('meeting-join', { body: { meeting_id: 'm1' } });
+  });
+
+  it('turns the function error body into an ApiError code', async () => {
+    invoke.mockResolvedValue({ data: null, error: { context: { json: async () => ({ error: 'too_early' }) } } });
+    await expect(joinMeeting('m1')).rejects.toEqual(new ApiError('too_early'));
+    invoke.mockResolvedValue({ data: null, error: { context: { json: async () => Promise.reject(new Error('html')) } } });
+    await expect(joinMeeting('m1')).rejects.toEqual(new ApiError('failed'));
+    invoke.mockResolvedValue({ data: null, error: {} });
+    await expect(joinMeeting('m1')).rejects.toEqual(new ApiError('failed'));
   });
 });
 

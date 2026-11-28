@@ -91,3 +91,16 @@ describe('profile changes', () => {
     expect(changedFields(before, { ...before, display_name: 'Ola' })).toEqual({ display_name: 'Ola' });
   });
 });
+
+describe('joinState', () => {
+  const { joinState } = jest.requireActual<typeof import('./meeting-time')>('./meeting-time');
+  const start = '2026-12-01T10:00:00Z';
+  const at = (iso: string) => Date.parse(iso);
+
+  it('opens 10 minutes early and is over 12 hours after the start', () => {
+    expect(joinState(start, at('2026-12-01T09:49:00Z'))).toBe('waiting');
+    expect(joinState(start, at('2026-12-01T09:50:00Z'))).toBe('open');
+    expect(joinState(start, at('2026-12-01T22:00:00Z'))).toBe('open');
+    expect(joinState(start, at('2026-12-01T22:00:01Z'))).toBe('over');
+  });
+});
