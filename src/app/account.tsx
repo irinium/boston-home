@@ -9,6 +9,7 @@ import { MultiChoice, SingleChoice } from '@/components/choices';
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, Field, Screen } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
+import { pushService, PushToggle } from '@/features/notifications';
 import { deleteAccount, setProfilePhoto, signedPhotoUrls, updateProfile, uploadPhoto } from '@/lib/api';
 import { AGE_BANDS, LANGUAGES } from '@/lib/options';
 import { changedFields, fromAccount } from '@/lib/profile';
@@ -48,6 +49,12 @@ export default function AccountScreen() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const onSignOut = async () => {
+    // Stop pushes to this phone first, while the session can still remove its token.
+    await pushService.forget().catch(() => {});
+    await signOut();
   };
 
   const onDelete = () =>
@@ -94,7 +101,8 @@ export default function AccountScreen() {
       </Card>
       <Button label={t('account.myListing')} onPress={() => router.push('/editor')} />
       <Button label={t('availability.open')} variant="secondary" onPress={() => router.push('/availability')} />
-      <Button label={t('common.signOut')} variant="secondary" onPress={signOut} />
+      <PushToggle />
+      <Button label={t('common.signOut')} variant="secondary" onPress={onSignOut} />
       <Button label={t('account.delete')} variant="danger" onPress={onDelete} />
       </ScrollView>
     </Screen>

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Alert } from 'react-native';
 
+import { pushService } from '@/features/notifications';
 import { deleteAccount, setProfilePhoto, signedPhotoUrls, updateProfile, uploadPhoto } from '@/lib/api';
 
 import { ME, mockAuth, signIn, signOutState } from '../auth-mock';
@@ -10,6 +11,10 @@ import AccountScreen from '@/app/account';
 
 jest.mock('@/providers/auth', () => require('../auth-mock'));
 jest.mock('@/lib/api');
+jest.mock('@/features/notifications', () => {
+  const { Text } = require('react-native');
+  return { pushService: { forget: jest.fn(async () => {}) }, PushToggle: () => <Text>push toggle</Text> };
+});
 jest.mock('expo-image-picker', () => ({ launchImageLibraryAsync: jest.fn() }));
 
 const pick = ImagePicker.launchImageLibraryAsync as jest.Mock;
@@ -119,4 +124,20 @@ it('sends only changed fields and keeps Save off until something changes', async
   await fireEvent.press(screen.getByText('English'));
   await fireEvent.press(screen.getByText('Save'));
   expect(updateProfile).toHaveBeenCalledWith(ME, { languages: ['uk', 'en'] });
+});
+
+it('shows the push switch and forgets this device before signing out', async () => {
+  signIn();
+  const order: string[] = [];
+  (pushService.forget as jest.Mock).mockImplementationOnce(async () => {
+    order.push('forget');
+    throw new Error('offline');
+  });
+  mockAuth.signOut.mockImplementationOnce(async () => {
+    order.push('signOut');
+  });
+  await render(<AccountScreen />);
+  expect(screen.getByText('push toggle')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByText('Sign out'));
+  expect(order).toEqual(['forget', 'signOut']);
 });

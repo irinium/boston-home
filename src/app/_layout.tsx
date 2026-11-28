@@ -5,12 +5,14 @@ import { useTranslation } from 'react-i18next';
 import { useColorScheme } from 'react-native';
 
 import { Colors } from '@/constants/theme';
+import { usePushRegistration } from '@/features/notifications';
 import { AuthProvider, useAuth } from '@/providers/auth';
 
 function RootStack() {
   const { t } = useTranslation();
   const { session } = useAuth();
   const signedIn = session !== null;
+  usePushRegistration(session?.user.id);
 
   return (
     <Stack screenOptions={{ headerBackButtonDisplayMode: 'minimal' }}>

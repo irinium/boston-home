@@ -375,4 +375,203 @@ select t.ok(exists (select 1 from public.video_room_closures where room_name = '
   'and closes their rooms');
 update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
 
+-- ---------------------------------------------------------------- push notifications
+reset role;
+update public.app_settings set paid_requests_enabled = false;
+insert into auth.users (id) values
+  ('00000000-0000-0000-0000-0000000000e1'), -- erin: listing owner
+  ('00000000-0000-0000-0000-0000000000e2'), -- fran: requester
+  ('00000000-0000-0000-0000-0000000000e3'); -- gwen: stranger
+update public.profiles set display_name = 'User ' || right(id::text, 2), photo_path = id || '/face.jpg'
+where id::text like '00000000-0000-0000-0000-0000000000e_';
+insert into public.listings (owner_id, status, title, country_code, city, approx_lat, approx_lng)
+values ('00000000-0000-0000-0000-0000000000e1', 'active', 'Listing e1', 'PL', 'Kraków', 50.06, 19.94);
+create function t.outbox(p_user text, p_kind text) returns integer language sql as $$
+  select count(*)::integer from public.notification_outbox
+  where user_id = p_user::uuid and kind = p_kind::public.notification_kind and sent_at is null
+$$;
+grant execute on function t.outbox(text, text) to service_role;
+
+select t.as_user('00000000-0000-0000-0000-0000000000e2');
+select t.ok(t.err('authenticated', $q$ select public.register_push_token('ExponentPushToken[fran-phone-0001]', 'ios', 'uk') $q$) is null,
+  'a member registers her device');
+select t.ok(t.err('authenticated', $q$ select public.register_push_token('not a token', 'ios', 'uk') $q$) like '%invalid_push_token%',
+  'malformed push tokens are rejected');
+select t.ok(t.err('authenticated', $q$ select public.register_push_token('ExponentPushToken[fran-phone-0001]', 'web', 'uk') $q$)
+  like '%invalid_platform%', 'only iOS and Android devices are registered');
+select t.ok(t.err('authenticated', $q$ insert into public.push_tokens (token, user_id, platform)
+  values ('ExponentPushToken[forged-token-01]', '00000000-0000-0000-0000-0000000000e1', 'ios') $q$) like '%permission denied%',
+  'tokens cannot be inserted directly');
+select t.ok(t.err('anon', $q$ select public.register_push_token('ExponentPushToken[guest-phone-01]', 'ios') $q$) like '%permission denied%',
+  'guests cannot register devices');
+select t.ok(t.err('authenticated', $q$
+  select public.register_push_token('ExponentPushToken[fran-phone-000' || i || ']', 'android', 'en') from generate_series(2, 7) i
+$q$) is null, 'she registers six more devices');
+select t.ok((select count(*) from public.push_tokens where user_id = '00000000-0000-0000-0000-0000000000e2') = 5,
+  'an account keeps at most 5 devices');
+select t.ok(exists (select 1 from public.push_tokens where token = 'ExponentPushToken[fran-phone-0007]')
+  and not exists (select 1 from public.push_tokens where token = 'ExponentPushToken[fran-phone-0001]'),
+  'the oldest devices are dropped first');
+
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.ok(t.err('authenticated', $q$ select public.register_push_token('ExponentPushToken[erin-phone-0001]', 'android', 'en') $q$) is null,
+  'the owner registers her device');
+select t.err('authenticated', 'insert into seen select count(*) from public.push_tokens');
+select t.ok((select n from seen) = 1, 'a member sees only her own devices');
+truncate seen;
+select t.err('authenticated', $q$ delete from public.push_tokens where token = 'ExponentPushToken[fran-phone-0007]' $q$);
+select t.ok(exists (select 1 from public.push_tokens where token = 'ExponentPushToken[fran-phone-0007]'),
+  'a member cannot remove another member''s device');
+select t.ok(t.err('authenticated', 'select * from public.notification_outbox') like '%permission denied%',
+  'clients cannot read the outbox');
+select t.ok(t.err('authenticated', 'select * from public.notification_preferences') like '%permission denied%',
+  'clients cannot read preferences directly');
+select t.ok(t.err('authenticated', 'select * from public.claim_push_batch()') like '%permission denied%',
+  'clients cannot claim notifications');
+select t.ok(t.err('authenticated', $q$ select public.enqueue_notification(auth.uid(), 'request_received', gen_random_uuid()) $q$)
+  like '%permission denied%', 'clients cannot queue notifications');
+
+-- A device that signs in to another account moves to it.
+select t.as_user('00000000-0000-0000-0000-0000000000e3');
+select t.err('authenticated', $q$ select public.register_push_token('ExponentPushToken[fran-phone-0003]', 'android', 'en') $q$);
+select t.ok((select user_id from public.push_tokens where token = 'ExponentPushToken[fran-phone-0003]') = '00000000-0000-0000-0000-0000000000e3',
+  'a shared device follows the account that signed in last');
+
+-- New request -> the owner is told, with no name in the outbox.
+select t.as_user('00000000-0000-0000-0000-0000000000e2');
+select t.ok(t.err('authenticated', $q$
+  select public.send_connection_request((select id from public.listings where owner_id = '00000000-0000-0000-0000-0000000000e1'), 'Привіт')
+$q$) is null, 'fran sends erin a request');
+reset role;
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e1', 'request_received') = 1, 'a new request queues a notification for the owner');
+
+-- Claiming and sending
+create temp table claimed as select * from public.claim_push_batch(100);
+select t.ok((select count(*) from claimed) = 1 and (select token from claimed) = 'ExponentPushToken[erin-phone-0001]'
+  and (select locale from claimed) = 'en', 'the batch has one line per device, with its language');
+select t.ok(not exists (select 1 from public.claim_push_batch(100)), 'claimed rows are locked against a second run');
+select public.finish_push_batch(array(select outbox_id from claimed), '{}', '{}');
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e1', 'request_received') = 0, 'sent rows are marked sent');
+drop table claimed;
+
+-- Accepting -> the requester is told; she has 4 devices left after one moved away.
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', $q$
+  select public.respond_to_request((select id from public.connection_requests where owner_id = auth.uid()), true)
+$q$);
+reset role;
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e2', 'request_accepted') = 1, 'accepting queues a notification for the requester');
+create temp table claimed as select * from public.claim_push_batch(100);
+select t.ok((select count(*) from claimed) = 4 and (select bool_and(locale = 'en') from claimed), 'every device of hers is in the batch');
+-- The push service failed for this row, and said one device is gone.
+select public.finish_push_batch('{}', array(select distinct outbox_id from claimed), '{ExponentPushToken[fran-phone-0004]}');
+select t.ok(not exists (select 1 from public.push_tokens where token = 'ExponentPushToken[fran-phone-0004]'), 'dead device tokens are removed');
+select t.ok((select send_after > now() + interval '1 minute' and attempts = 1 and locked_until is null from public.notification_outbox
+  where id = (select distinct outbox_id from claimed)), 'a failed row is retried later with backoff');
+update public.notification_outbox set send_after = now(), attempts = public.push_max_attempts() where id = (select distinct outbox_id from claimed);
+select t.ok(not exists (select 1 from public.claim_push_batch(100)), 'after too many attempts a row is given up');
+select t.ok((select skipped from public.notification_outbox where id = (select distinct outbox_id from claimed)), 'and marked as skipped');
+drop table claimed;
+
+-- Booking -> the owner is told, both get a reminder 10 minutes before the start.
+insert into public.availability_slots (owner_id, starts_at, ends_at)
+values ('00000000-0000-0000-0000-0000000000e1', date_trunc('day', now()) + interval '5 days 10 hours', date_trunc('day', now()) + interval '5 days 12 hours');
+select t.as_user('00000000-0000-0000-0000-0000000000e2');
+select t.ok(t.err('authenticated', $q$
+  select public.book_meeting((select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-0000000000e1'),
+    date_trunc('day', now()) + interval '5 days 10 hours')
+$q$) is null, 'fran books a meeting');
+reset role;
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e1', 'meeting_booked') = 1, 'booking queues a notification for the owner');
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e2', 'meeting_booked') = 0, 'the woman who booked is not told about her own booking');
+select t.ok((select count(*) from public.notification_outbox o join public.meetings m on m.id = o.ref_id
+  where o.kind = 'meeting_starting' and o.send_after = m.starts_at - interval '10 minutes'
+    and m.owner_id = '00000000-0000-0000-0000-0000000000e1') = 2,
+  'both get a reminder when the room opens');
+select t.ok(not exists (select 1 from public.claim_push_batch(100) where kind = 'meeting_starting'), 'reminders wait until the room opens');
+
+-- Opting out drops what is waiting and stops new pushes.
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', 'insert into seen select public.my_push_enabled()::int');
+select t.ok((select n from seen) = 1, 'push is on by default');
+truncate seen;
+select t.ok(t.err('authenticated', 'select public.set_push_enabled(false)') is null, 'she switches push off');
+select t.err('authenticated', 'insert into seen select public.my_push_enabled()::int');
+select t.ok((select n from seen) = 0, 'and the switch is saved');
+truncate seen;
+reset role;
+select t.ok(not exists (select 1 from public.notification_outbox where user_id = '00000000-0000-0000-0000-0000000000e1' and sent_at is null),
+  'switching off drops her queued notifications');
+select public.enqueue_notification('00000000-0000-0000-0000-0000000000e1', 'meeting_booked',
+  (select id from public.meetings where owner_id = '00000000-0000-0000-0000-0000000000e1' and status = 'scheduled'));
+select t.ok(not exists (select 1 from public.claim_push_batch(100) where token like '%erin%'), 'nothing is sent to her while push is off');
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', 'select public.set_push_enabled(true)');
+
+-- The start time moves -> the reminder moves with it.
+reset role;
+update public.meetings set starts_at = starts_at + interval '1 hour', ends_at = ends_at + interval '1 hour'
+where owner_id = '00000000-0000-0000-0000-0000000000e1' and status = 'scheduled';
+select t.ok((select send_after = (select starts_at from public.meetings where owner_id = '00000000-0000-0000-0000-0000000000e1' and status = 'scheduled')
+  - interval '10 minutes' from public.notification_outbox where user_id = '00000000-0000-0000-0000-0000000000e2' and kind = 'meeting_starting'),
+  'a moved meeting moves its reminder');
+
+-- A reminder is sent when the room opens, and not after the start.
+update public.meetings set starts_at = now() + interval '5 minutes', ends_at = now() + interval '65 minutes'
+where owner_id = '00000000-0000-0000-0000-0000000000e1' and status = 'scheduled';
+select t.ok(exists (select 1 from public.claim_push_batch(100) where kind = 'meeting_starting' and token like '%fran%'),
+  'the reminder goes out once the room is open');
+
+-- Cancelling: only the other woman is told, and pending reminders are dropped.
+select t.as_user('00000000-0000-0000-0000-0000000000e2');
+select t.ok(t.err('authenticated', $q$
+  select public.cancel_meeting((select id from public.meetings where requester_id = auth.uid() and status = 'scheduled'))
+$q$) is null, 'fran cancels the meeting');
+reset role;
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e1', 'meeting_cancelled') = 1, 'the other woman is told about the cancellation');
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e2', 'meeting_cancelled') = 0, 'the woman who cancelled is not');
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e1', 'meeting_starting') = 0, 'reminders of a cancelled meeting are dropped');
+
+-- A request withdrawn before sending is not announced; a suspended account gets nothing.
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', $q$ select public.register_push_token('ExponentPushToken[erin-phone-0001]', 'android', 'uk') $q$);
+reset role;
+insert into public.listings (owner_id, status, title, country_code, city, approx_lat, approx_lng)
+values ('00000000-0000-0000-0000-0000000000e3', 'active', 'Listing e3', 'PL', 'Gdańsk', 54.35, 18.65);
+select t.as_user('00000000-0000-0000-0000-0000000000e2');
+select t.err('authenticated', $q$
+  select public.send_connection_request((select id from public.listings where owner_id = '00000000-0000-0000-0000-0000000000e3'), 'Hi')
+$q$);
+select t.err('authenticated', $q$
+  select public.withdraw_request((select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-0000000000e3'))
+$q$);
+reset role;
+create temp table claimed as select * from public.claim_push_batch(100);
+select t.ok(not exists (select 1 from claimed where kind = 'request_received'), 'a withdrawn request is not announced');
+select t.ok((select locale from claimed where kind = 'meeting_cancelled') = 'uk', 'the device language is updated on re-registration');
+select public.finish_push_batch(array(select outbox_id from claimed), '{}', '{}');
+drop table claimed;
+update public.profiles set is_suspended = true where id = '00000000-0000-0000-0000-0000000000e1';
+select public.enqueue_notification('00000000-0000-0000-0000-0000000000e1', 'meeting_cancelled',
+  (select id from public.meetings where owner_id = '00000000-0000-0000-0000-0000000000e1' limit 1));
+delete from public.notification_outbox where user_id = '00000000-0000-0000-0000-0000000000e1' and sent_at is not null;
+select public.enqueue_notification('00000000-0000-0000-0000-0000000000e1', 'meeting_cancelled',
+  (select id from public.meetings where owner_id = '00000000-0000-0000-0000-0000000000e1' limit 1));
+select t.ok(not exists (select 1 from public.claim_push_batch(100)), 'a suspended account gets no pushes');
+update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-0000000000e1';
+
+-- A block: nothing is announced between the two accounts.
+select t.as_user('00000000-0000-0000-0000-0000000000e3');
+select t.err('authenticated', $q$ insert into public.blocks (blocker_id, blocked_id) values (auth.uid(), '00000000-0000-0000-0000-0000000000e2') $q$);
+reset role;
+select t.ok(t.outbox('00000000-0000-0000-0000-0000000000e2', 'request_declined') = 0, 'a block does not announce a decline');
+
+-- Deleting the account removes her devices, preferences and queue.
+delete from auth.users where id = '00000000-0000-0000-0000-0000000000e1';
+delete from public.profiles where id = '00000000-0000-0000-0000-0000000000e1';
+select t.ok(not exists (select 1 from public.push_tokens where user_id = '00000000-0000-0000-0000-0000000000e1')
+  and not exists (select 1 from public.notification_outbox where user_id = '00000000-0000-0000-0000-0000000000e1')
+  and not exists (select 1 from public.notification_preferences where user_id = '00000000-0000-0000-0000-0000000000e1'),
+  'a deleted account leaves no devices, preferences or queued pushes');
+
 \echo 'all database tests passed'

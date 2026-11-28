@@ -240,4 +240,13 @@ export const en: Translation = {
       request_not_accepted: 'The request has not been accepted yet.',
     },
   },
+  notifications: {
+    channel: 'Requests and meetings',
+    toggle: 'Push notifications',
+    why: 'Short alerts about requests and meetings. They never show names or details: you see those only in the app.',
+    denied: 'Notifications are turned off for Boston Home in your phone settings.',
+    unavailable: 'Push notifications are not available in this version of the app.',
+    error: 'Could not change the setting. Please try again.',
+    openSettings: 'Open settings',
+  },
 };
