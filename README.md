@@ -75,9 +75,30 @@ supabase functions deploy video-cleanup --no-verify-jwt
 
 and in the SQL editor store the two Vault secrets the cron job reads: `select vault.create_secret('https://<project>.supabase.co', 'project_url'); select vault.create_secret('<same random>', 'video_cleanup_secret');`
 
+## Credit purchases
+
+Credits are sold as consumable packs (`credit_packs`: `credits_5`, `credits_15`, `credits_40`; the product ids must match App Store Connect and Play Console). The app buys through `expo-iap` (StoreKit 2, Play Billing) and ties every payment to the account (`appAccountToken` / `obfuscatedAccountId` = user id). Prices come from the stores, in the buyer's currency.
+
+- **Verification only on the server.** The app sends the App Store transactionId or the Play purchaseToken to `supabase/functions/purchase-verify`, which asks the store's server API (App Store Server API, production first and then sandbox; Play Developer API) and only then calls `grant_purchase`. A transaction of another account answers 403, one already claimed by another account 409.
+- **Exactly once.** `credit_purchases` has a unique key on (store, purchase id), and the ledger allows one `purchase` and one `refund` row per purchase. A replayed receipt answers `duplicate: true` and grants nothing. The app finishes a transaction only once the server has answered for good, so a purchase made offline is verified on the next start.
+- **Refunds and revocations.** `supabase/functions/store-notifications` takes App Store Server Notifications v2 at `/app-store` (REFUND, REVOKE; the transaction is fetched again from Apple, so a forged notification changes nothing) and Play RTDN at `/play` (an authenticated Pub/Sub push; the Google-signed OIDC token is checked). `revoke_purchase` takes the credits back once; if they were already spent, the balance goes below zero and she cannot send requests until it is positive again.
+- **Data.** No receipts, prices or payment details are stored: only the store, the transaction id, the pack and the dates. Clients cannot read `credit_purchases`; their history is in `credit_ledger`.
+- **Code layout.** The use cases live in `supabase/functions/_shared/billing.ts` behind ports (store gateways, ledger, log); `billing-http.ts` holds the store adapters (WebCrypto JWTs, no SDK). In the app, `src/features/credits` keeps the purchase rules in `domain/` and the store behind the `BillingStore` port.
+
+Setup (needs the products in App Store Connect and Play Console, and a development build, since `expo-iap` is native):
+
+```bash
+supabase secrets set APPLE_ISSUER_ID=... APPLE_KEY_ID=... APPLE_PRIVATE_KEY="$(cat AuthKey_XXXX.p8)" APPLE_BUNDLE_ID=app.bostonhome \
+  PLAY_PACKAGE_NAME=app.bostonhome PLAY_SERVICE_ACCOUNT="$(cat play-service-account.json)" \
+  PUBSUB_AUDIENCE=https://<project>.supabase.co/functions/v1/store-notifications/play PUBSUB_SERVICE_ACCOUNT=<push-sa>@<gcp>.iam.gserviceaccount.com
+supabase functions deploy purchase-verify
+supabase functions deploy store-notifications --no-verify-jwt
+```
+
+Then set `https://<project>.supabase.co/functions/v1/store-notifications/app-store` as the App Store Server Notifications v2 URL (production and sandbox), and in Google Cloud create a Pub/Sub topic for RTDN with a push subscription to `.../store-notifications/play` that uses authentication with the service account and audience above. The Play service account needs the "View financial data" and "Manage orders" permissions in Play Console.
+
 ## Next
 
 - Selfie verification (Didit: liveness + face match) through an Edge Function and webhook, then turn on `selfie_verification_required`.
-- Credit purchases (StoreKit / Google Play Billing, receipts verified on the server).
 - Map view of listings (approximate points), push notifications without names.
 - Moderation admin panel.

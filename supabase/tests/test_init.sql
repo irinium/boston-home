@@ -375,4 +375,91 @@ select t.ok(exists (select 1 from public.video_room_closures where room_name = '
   'and closes their rooms');
 update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
 
+-- ---------------------------------------------------------------- credit purchases
+reset role;
+select t.as_user('00000000-0000-0000-0000-000000000002');
+create temp table bal0 as select public.credit_balance('00000000-0000-0000-0000-000000000002') as n;
+grant select on bal0 to authenticated, service_role;
+
+select t.ok(t.err('anon', $q$ select * from public.credit_packs $q$) is null
+  and (select count(*) from public.credit_packs where active) = 3, 'anyone can read the active credit packs');
+update public.credit_packs set active = false where id = 'credits_40';
+select t.ok(t.err('authenticated', $q$
+  do $d$ begin
+    if exists (select 1 from public.credit_packs where id = 'credits_40') then raise exception 'inactive pack visible'; end if;
+  end $d$ $q$) is null, 'inactive packs are hidden from clients');
+select t.ok(t.err('authenticated', $q$ update public.credit_packs set credits = 1000 $q$) like '%permission denied%',
+  'clients cannot change the packs');
+select t.ok(t.err('authenticated', $q$ select * from public.credit_purchases $q$) like '%permission denied%',
+  'clients cannot read purchases');
+select t.ok(t.err('authenticated', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'app_store', 'tx-forged', 'credits_40', 'production', now())
+$q$) like '%permission denied%', 'clients cannot grant themselves a purchase');
+select t.ok(t.err('authenticated', $q$ select public.revoke_purchase('app_store', 'tx-1') $q$) like '%permission denied%',
+  'clients cannot call revoke_purchase');
+select t.ok(t.err('anon', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'app_store', 'tx-forged', 'credits_40', 'production', now())
+$q$) like '%permission denied%', 'guests cannot grant purchases');
+
+create temp table gp (r jsonb);
+grant all on gp to service_role;
+select t.ok(t.err('service_role', $q$
+  insert into gp select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'app_store', 'tx-1', 'credits_15', 'sandbox', now())
+$q$) is null, 'the service role can grant a verified purchase');
+select t.ok((select r ->> 'credits' from gp) = '15' and (select r ->> 'duplicate' from gp) = 'false'
+  and (select (r ->> 'balance')::int from gp) = (select n from bal0) + 15, 'a verified purchase grants the credits of its pack');
+truncate gp;
+select t.ok(t.err('service_role', $q$
+  insert into gp select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'app_store', 'tx-1', 'credits_15', 'sandbox', now())
+$q$) is null, 'granting the same transaction again succeeds');
+select t.ok((select r ->> 'duplicate' from gp) = 'true'
+  and public.credit_balance('00000000-0000-0000-0000-000000000002') = (select n from bal0) + 15,
+  'the same transaction never grants twice');
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000003', 'app_store', 'tx-1', 'credits_15', 'sandbox', now())
+$q$) like '%purchase_owned_by_other%', 'a receipt cannot be claimed by a second account');
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'play', 'tx-1', 'credits_1000', 'sandbox', now())
+$q$) like '%unknown_product%', 'unknown products grant nothing');
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'play', 'tok-40', 'credits_40', 'production', now())
+$q$) is null, 'a pack taken off sale is still honoured for a paid purchase');
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-0000000000ff', 'play', 'tok-ghost', 'credits_5', 'production', now())
+$q$) like '%user_not_found%', 'purchases need an existing account');
+select t.ok((select count(*) from public.credit_purchases where purchase_id = 'tx-1') = 1
+  and (select count(*) from public.credit_ledger l join public.credit_purchases p on p.id = l.ref_id
+       where p.purchase_id = 'tx-1' and l.reason = 'purchase') = 1, 'one purchase row and one ledger entry per transaction');
+update public.credit_packs set active = true where id = 'credits_40';
+
+select t.ok(t.err('service_role', $q$
+  do $d$ begin
+    if public.revoke_purchase('app_store', 'tx-1') ->> 'status' <> 'revoked' then raise exception 'not revoked'; end if;
+    if public.revoke_purchase('app_store', 'tx-1') ->> 'status' <> 'already_revoked' then raise exception 'revoked twice'; end if;
+    if public.revoke_purchase('app_store', 'tx-unknown') ->> 'status' <> 'not_found' then raise exception 'unknown'; end if;
+  end $d$ $q$) is null, 'a refund is applied once, and unknown transactions are ignored');
+select t.ok(public.credit_balance('00000000-0000-0000-0000-000000000002') = (select n from bal0) + 40
+  and exists (select 1 from public.credit_ledger l join public.credit_purchases p on p.id = l.ref_id
+              where p.purchase_id = 'tx-1' and l.reason = 'refund' and l.delta = -15)
+  and (select status from public.credit_purchases where purchase_id = 'tx-1') = 'revoked',
+  'the refund takes the credits back and marks the purchase revoked');
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000002', 'app_store', 'tx-1', 'credits_15', 'sandbox', now())
+$q$) like '%purchase_revoked%', 'a refunded transaction cannot be granted again');
+select t.ok(t.err('service_role', $q$
+  insert into public.credit_ledger (user_id, delta, reason, ref_id)
+  select user_id, 15, 'purchase', id from public.credit_purchases where purchase_id = 'tx-1'
+$q$) like '%credit_ledger_purchase_once_idx%', 'the ledger holds at most one grant per purchase');
+
+-- A refund after the credits were spent leaves a negative balance, which blocks spending.
+select t.ok(t.err('service_role', $q$
+  select public.grant_purchase('00000000-0000-0000-0000-000000000003', 'play', 'tok-spent', 'credits_5', 'production', now())
+$q$) is null, 'a second user buys a pack');
+insert into public.credit_ledger (user_id, delta, reason)
+  values ('00000000-0000-0000-0000-000000000003', -(public.credit_balance('00000000-0000-0000-0000-000000000003')), 'admin_adjustment');
+select t.ok(t.err('service_role', $q$ select public.revoke_purchase('play', 'tok-spent') $q$) is null, 'the service role can revoke a purchase');
+select t.ok(public.credit_balance('00000000-0000-0000-0000-000000000003') = -5, 'a refund of spent credits makes the balance negative');
+reset role;
+
+
 \echo 'all database tests passed'

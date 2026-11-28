@@ -71,6 +71,7 @@ export default function AccountScreen() {
         <ThemedText>
           {t('account.credits')}: {account?.credits ?? 0}
         </ThemedText>
+        <Button label={t('credits.open')} variant="secondary" onPress={() => router.push('/credits')} />
       </Card>
       {account ? (
         <ProfileForm key={account.id} account={account} onSaved={refreshAccount} />

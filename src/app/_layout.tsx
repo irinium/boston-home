@@ -29,6 +29,7 @@ function RootStack() {
         <Stack.Screen name="account" options={{ title: t('account.title') }} />
         <Stack.Screen name="editor" options={{ title: t('editor.title') }} />
         <Stack.Screen name="availability" options={{ title: t('availability.title') }} />
+        <Stack.Screen name="credits" options={{ title: t('credits.title') }} />
         <Stack.Screen name="book/[requestId]" options={{ title: t('meetings.title'), presentation: 'modal' }} />
       </Stack.Protected>
     </Stack>

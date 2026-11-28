@@ -120,3 +120,10 @@ it('sends only changed fields and keeps Save off until something changes', async
   await fireEvent.press(screen.getByText('Save'));
   expect(updateProfile).toHaveBeenCalledWith(ME, { languages: ['uk', 'en'] });
 });
+
+it('links to the credits screen', async () => {
+  signIn();
+  await render(<AccountScreen />);
+  await fireEvent.press(screen.getByText('Buy credits'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/credits');
+});
