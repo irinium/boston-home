@@ -26,6 +26,8 @@ Product plan: [Boston: product and architecture plan (MVP)](https://claude.ai/ar
 - **Photos.** Re-encoded before upload (which strips EXIF/GPS) and kept in private buckets, served through links that expire after 5 minutes.
 - **Requests.** No contact details before the video meeting: phone numbers, emails, links and messenger names are rejected in the database (`contains_contact_info`) and highlighted in the app. Daily limits: 3 requests for new accounts, 10 for others.
 - **Reports.** A report automatically blocks the reported person. A report of "this is a man", threats or stalking from someone who interacted with the account suspends it at once; strangers need several distinct reports, so one malicious report cannot take down an honest listing.
+- **Meetings.** Each booking reserves a 60-minute window; it is the gap between meetings and does not limit the call. The database offers only free starts (`bookable_starts`), rejects overlapping free time, and marks meetings completed 12 hours after the start (`complete_past_meetings`, scheduled with pg_cron every 30 minutes).
+- **Location permission.** Foreground only and approximate: Android's precise and background location permissions are blocked in `app.json`.
 - **Credits.** Kept only in a server-side ledger. A credit is refunded when a request is declined, expires after 7 days, or is withdrawn.
 
 ## Running
@@ -45,7 +47,7 @@ npm run typecheck
 npx expo lint
 npm test                # unit tests (Jest + React Native Testing Library)
 npm run test:coverage   # same, fails below 80% statements/branches/functions/lines
-npm run test:db         # migrations + 60 security checks on a local PostgreSQL
+npm run test:db         # migrations + 61 security checks on a local PostgreSQL
 ```
 
 `test:db` needs PostgreSQL 14+ (`PGHOST`, `PGPORT`, `PGUSER` in the environment).
@@ -55,7 +57,7 @@ CI (`.github/workflows/ci.yml`) runs typecheck, lint, unit tests with the covera
 ## Next
 
 - Selfie verification (Didit: liveness + face match) through an Edge Function and webhook, then turn on `selfie_verification_required`.
-- Video meetings (Daily): room and tokens issued by an Edge Function for the booked slot.
+- Video meetings (Daily): room and tokens issued by an Edge Function for the booked start time. The call has no time limit: the room must not expire at `meetings.ends_at`.
 - Credit purchases (StoreKit / Google Play Billing, receipts verified on the server).
-- Location picker on a map, remaining filters, availability UI, push notifications without names.
+- Map view of listings (approximate points), push notifications without names.
 - Moderation admin panel.

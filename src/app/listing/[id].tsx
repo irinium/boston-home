@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, ScrollView, View } from 'react-native';
 
+import { ConditionsList } from '@/components/conditions-list';
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, Screen } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
@@ -19,12 +20,12 @@ export default function ListingScreen() {
   const router = useRouter();
   const { session, account } = useAuth();
   const item = listingCache.get(id);
-  const verified = account?.trusted === true;
+  const trusted = account?.trusted === true;
   const [photos, setPhotos] = useState<string[]>([]);
   const [ownerId, setOwnerId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!verified) return;
+    if (!trusted) return;
     // Members may read the listing row (RLS); guests never get the owner's id or photos.
     supabase
       .from('listings')
@@ -36,7 +37,7 @@ export default function ListingScreen() {
         setOwnerId(data.owner_id);
         setPhotos(await signedPhotoUrls('listing-photos', data.photo_paths ?? []));
       });
-  }, [id, verified]);
+  }, [id, trusted]);
 
   if (!item) {
     return (
@@ -64,7 +65,7 @@ export default function ListingScreen() {
   return (
     <Screen style={{ padding: 0 }}>
       <ScrollView contentContainerStyle={{ padding: Spacing.three, gap: Spacing.three }}>
-        {verified && photos.length > 0 ? (
+        {trusted && photos.length > 0 ? (
           <ScrollView horizontal contentContainerStyle={{ gap: Spacing.two }}>
             {photos.map((uri) => (
               <Image key={uri} source={{ uri }} style={{ width: 260, height: 320, borderRadius: Radius.medium }} />
@@ -100,6 +101,8 @@ export default function ListingScreen() {
             {item.has_children ? `${t('listing.children.yes')} (${item.children_count})` : t('listing.children.no')}
           </ThemedText>
         </Card>
+
+        <ConditionsList item={item} />
 
         {item.about.length > 0 && (
           <View style={{ gap: Spacing.one }}>
