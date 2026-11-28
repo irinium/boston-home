@@ -1,9 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 
 import { searchListings } from '@/lib/api';
+import { filterStore } from '@/lib/filter-store';
 import { listingCache } from '@/lib/listing-cache';
 
 import { mockAuth, signIn, signOutState } from '../auth-mock';
+import { mockRouter } from '../expo-router-mock';
 import { listing } from '../fixtures';
 import ShowcaseScreen from '@/app/index';
 
@@ -36,23 +38,15 @@ it('shows inbox and profile links and hides the banner for trusted members', asy
   expect(mockAuth.account?.trusted).toBe(true);
 });
 
-it('filters by country once two letters are typed and toggles chips', async () => {
+it('opens the filters screen and reloads when filters change', async () => {
   await render(<ShowcaseScreen />);
   await screen.findByText('Looking for a calm home');
-  await fireEvent.changeText(screen.getByDisplayValue(''), 'I');
-  await waitFor(() => expect(search).toHaveBeenLastCalledWith({ country: undefined }));
-  await fireEvent.changeText(screen.getByDisplayValue('I'), 'IT');
-  await waitFor(() => expect(search).toHaveBeenLastCalledWith({ country: 'IT' }));
-
-  await fireEvent.press(screen.getByText('With children'));
-  await waitFor(() => expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ hasChildren: true })));
-  await fireEvent.press(screen.getByText('With children'));
-  await waitFor(() => expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ hasChildren: undefined })));
-  await fireEvent.press(screen.getByText('No pets'));
-  await fireEvent.press(screen.getByText('Non-smoker'));
-  await waitFor(() =>
-    expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ noPets: true, noSmoking: true })),
-  );
+  await fireEvent.press(screen.getByText('Filters'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/filters');
+  await act(async () => filterStore.set({ country: 'IT', noPets: true }));
+  await waitFor(() => expect(search).toHaveBeenLastCalledWith({ country: 'IT', noPets: true }));
+  expect(screen.getByText('Filters (2)')).toBeOnTheScreen();
+  await act(async () => filterStore.set({}));
 });
 
 it('shows an empty state', async () => {
