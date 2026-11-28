@@ -46,6 +46,7 @@
         }
       ],
       "expo-apple-authentication",
+      "react-native-maps",
       [
         "expo-location",
         {

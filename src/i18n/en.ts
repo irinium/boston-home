@@ -240,4 +240,18 @@ export const en: Translation = {
       request_not_accepted: 'The request has not been accepted yet.',
     },
   },
+  map: {
+    title: 'Map',
+    open: 'Map',
+    guestPrompt: 'Sign in to see listings on the map. Points are approximate, to about 5 km.',
+    notTrustedPrompt: 'The map is visible to verified members. Add a profile photo to open it.',
+    openAccount: 'My profile',
+    approximate: 'Places are approximate, to about 5 km.',
+    capped: 'There are many listings here. Zoom in to see them all.',
+    empty: 'No listings in this area.',
+    markerLabel: 'Listings: {{count}}',
+    here: 'Listings here: {{count}}',
+    close: 'Close',
+    webUnavailable: 'The map is available in the iOS and Android app.',
+  },
 };

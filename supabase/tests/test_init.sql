@@ -375,4 +375,109 @@ select t.ok(exists (select 1 from public.video_room_closures where room_name = '
   'and closes their rooms');
 update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
 
+-- ---------------------------------------------------------------- map of listings
+reset role;
+insert into auth.users (id, created_at) values
+  ('00000000-0000-0000-0000-0000000000e1', now() - interval '30 days'), -- mia: map viewer
+  ('00000000-0000-0000-0000-0000000000e2', now() - interval '30 days'), -- Lisboa
+  ('00000000-0000-0000-0000-0000000000e3', now() - interval '30 days'), -- Porto, smokes
+  ('00000000-0000-0000-0000-0000000000e4', now() - interval '30 days'); -- Fiji, near the antimeridian
+update public.profiles set verification_status = 'verified', display_name = 'Map ' || right(id::text, 1),
+  age_band = '25_34', photo_path = id || '/face.jpg', languages = '{pt}'
+where id::text like '00000000-0000-0000-0000-0000000000e_';
+insert into public.listings (owner_id, status, title, country_code, city, approx_lat, approx_lng, has_children, children_count, smoking)
+values
+  ('00000000-0000-0000-0000-0000000000e1', 'active', 'Mia', 'PT', 'Lisboa', 38.7223, -9.1393, false, 0, 'no'),
+  ('00000000-0000-0000-0000-0000000000e2', 'active', 'Lisboa home', 'PT', 'Lisboa', 38.7223, -9.1393, true, 1, 'no'),
+  ('00000000-0000-0000-0000-0000000000e3', 'active', 'Porto home', 'PT', 'Porto', 41.1579, -8.6291, false, 0, 'yes'),
+  ('00000000-0000-0000-0000-0000000000e4', 'active', 'Fiji home', 'FJ', 'Taveuni', -16.85, 179.9, false, 0, 'no');
+
+select t.as_user(null);
+select t.ok(t.err('anon', $q$ select * from public.map_listings(30, -10, 45, 0) $q$) like '%permission denied%',
+  'guests cannot load map points');
+select t.as_user('00000000-0000-0000-0000-00000000000c');
+select t.ok(t.err('authenticated', $q$ select * from public.map_listings(30, -10, 45, 0) $q$) like '%verification_required%',
+  'accounts that are not trusted yet cannot load map points');
+
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.ok(t.err('authenticated', $q$ select * from public.map_listings(45, -10, 30, 0) $q$) like '%invalid_bounds%',
+  'a box with south above north is rejected');
+select t.ok(t.err('authenticated', $q$ select * from public.map_listings(30, -200, 45, 0) $q$) like '%invalid_bounds%',
+  'longitudes outside -180..180 are rejected');
+
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6) $q$);
+select t.ok((select n from seen) = 2, 'the map returns listings inside the box, without the viewer''s own');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6)
+  m join public.listings l using (id) where m.approx_lat = l.approx_lat and m.approx_lng = l.approx_lng
+  and m.approx_lat <> 38.7223 $q$);
+select t.ok((select n from seen) = 2, 'map points are the stored obfuscated coordinates');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(38.7223, -9.1393, 38.7223, -9.1393)
+  where title = 'Lisboa home' $q$);
+select t.ok((select n from seen) = 1, 'a point-sized box is widened to 10 km');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(-20, 179.5, -14, -179.5)
+  where title = 'Fiji home' $q$);
+select t.ok((select n from seen) = 1, 'a box across the antimeridian works');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6, p_no_smoking => true) $q$);
+select t.ok((select n from seen) = 1, 'the map applies the search filters');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6,
+  p_lat => 38.7223, p_lng => -9.1393, p_radius_km => 1) where distance_band = 'lt_10' $q$);
+select t.ok((select n from seen) = 1, 'the radius is at least 10 km and distances are bands');
+truncate seen;
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(-90, -180, 90, 180, p_limit => 1000) $q$);
+select t.ok((select n from seen) between 1 and 200, 'one call returns at most 200 listings');
+truncate seen;
+
+-- The map must never show a listing that search would hide: same filters, same listings.
+select t.ok(t.err('authenticated', $q$
+  do $d$
+  declare f record;
+  begin
+    for f in select * from (values
+      (null::text, null::boolean, null::boolean, null::boolean, null::text[]),
+      ('pt', null, null, null, null),
+      (null, true, null, null, null),
+      (null, null, true, true, null),
+      (null, null, null, null, '{uk}'::text[])
+    ) v(country, has_children, no_pets, no_smoking, languages) loop
+      if exists (
+        (select id from public.map_listings(-90, -180, 90, 180, p_country => f.country, p_has_children => f.has_children,
+           p_no_pets => f.no_pets, p_no_smoking => f.no_smoking, p_languages => f.languages)
+         except
+         select id from public.search_listings(p_country => f.country, p_has_children => f.has_children,
+           p_no_pets => f.no_pets, p_no_smoking => f.no_smoking, p_languages => f.languages, p_limit => 30)
+         where approx_lat is not null)
+        union all
+        (select id from public.search_listings(p_country => f.country, p_has_children => f.has_children,
+           p_no_pets => f.no_pets, p_no_smoking => f.no_smoking, p_languages => f.languages, p_limit => 30)
+         where approx_lat is not null
+         except
+         select id from public.map_listings(-90, -180, 90, 180, p_country => f.country, p_has_children => f.has_children,
+           p_no_pets => f.no_pets, p_no_smoking => f.no_smoking, p_languages => f.languages))
+      ) then
+        raise exception 'map and search differ for %', f;
+      end if;
+    end loop;
+  end $d$ $q$) is null, 'map and search return the same listings for the same filters');
+
+reset role;
+insert into public.blocks (blocker_id, blocked_id) values ('00000000-0000-0000-0000-0000000000e2', '00000000-0000-0000-0000-0000000000e1');
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6) where title = 'Lisboa home' $q$);
+select t.ok((select n from seen) = 0, 'a block hides the listing from the map');
+truncate seen;
+reset role;
+update public.profiles set is_suspended = true where id = '00000000-0000-0000-0000-0000000000e3';
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.map_listings(36, -10, 43, -6) $q$);
+select t.ok((select n from seen) = 0, 'suspended owners disappear from the map');
+truncate seen;
+reset role;
+update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-0000000000e3';
+delete from public.blocks where blocker_id = '00000000-0000-0000-0000-0000000000e2';
+
 \echo 'all database tests passed'

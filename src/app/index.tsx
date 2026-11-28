@@ -50,6 +50,11 @@ export default function ShowcaseScreen() {
         options={{
           headerRight: () => (
             <View style={{ flexDirection: 'row', gap: Spacing.three }}>
+              <Link href="/map" asChild>
+                <Pressable accessibilityRole="link">
+                  <ThemedText type="linkPrimary">{t('map.open')}</ThemedText>
+                </Pressable>
+              </Link>
               {session ? (
                 <>
                   <Link href="/inbox" asChild>
