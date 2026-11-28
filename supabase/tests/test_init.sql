@@ -375,4 +375,136 @@ select t.ok(exists (select 1 from public.video_room_closures where room_name = '
   'and closes their rooms');
 update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
 
+-- ---------------------------------------------------------------- moderation admin panel
+reset role;
+insert into auth.users (id) values ('00000000-0000-0000-0000-00000000000e'); -- erin: moderator
+insert into public.admin_users (user_id) values ('00000000-0000-0000-0000-00000000000e');
+insert into public.reports (reporter_id, reported_id, reason, details)
+  values ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000003', 'fake', 'stock photos');
+create temp table mr as select id from public.reports where reported_id = '00000000-0000-0000-0000-000000000003';
+create temp table ml as select id from public.listings where owner_id = '00000000-0000-0000-0000-000000000003';
+grant select on mr, ml to authenticated;
+
+select t.as_user(null);
+select t.ok(t.err('anon', $q$ select public.admin_whoami() $q$) like '%permission denied%',
+  'guests cannot call admin RPCs');
+
+select t.as_user('00000000-0000-0000-0000-00000000000a');
+select t.ok(t.err('authenticated', $q$ select * from public.admin_users $q$) like '%permission denied%',
+  'clients cannot read the admin list');
+select t.ok(t.err('authenticated', $q$ insert into public.admin_users (user_id) values (auth.uid()) $q$) like '%permission denied%',
+  'clients cannot make themselves admins');
+select t.ok(t.err('authenticated', $q$ select * from public.moderation_log $q$) like '%permission denied%',
+  'clients cannot read the moderation log directly');
+select t.ok(t.err('authenticated', $q$ select public.is_admin(auth.uid()) $q$) like '%permission denied%',
+  'clients cannot call the internal admin check');
+select t.ok(t.err('authenticated', $q$ select public.write_moderation_log(auth.uid(), 'suspend_account', 'forged') $q$)
+  like '%permission denied%', 'clients cannot write log rows');
+set role authenticated;
+select t.ok(not (public.admin_whoami() ->> 'is_admin')::boolean, 'a member is told she is not an admin');
+reset role;
+select t.ok(t.err('authenticated', $q$ select * from public.admin_report_queue() $q$) like '%not_admin%',
+  'members cannot read the report queue');
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-000000000003', 'because') $q$)
+  like '%not_admin%', 'members cannot suspend accounts');
+select t.ok(t.err('authenticated', $q$ select public.admin_hide_listing((select id from ml), 'because') $q$)
+  like '%not_admin%', 'members cannot hide listings');
+select t.ok(t.err('authenticated', $q$ select * from public.admin_moderation_log() $q$) like '%not_admin%',
+  'members cannot read the audit log');
+
+select t.as_user('00000000-0000-0000-0000-00000000000e');
+set role authenticated;
+select t.ok((public.admin_whoami() ->> 'is_admin')::boolean, 'an admin is recognised');
+select t.ok(exists (select 1 from public.admin_report_queue() q where q.id = (select id from mr)
+  and q.reported_display_name = 'User 3' and q.open_reports_against = 1 and q.listing_id = (select id from ml)),
+  'the queue shows the open report with the reported account and her listing');
+select t.ok(not exists (select 1 from public.admin_report_queue(array['resolved']::public.report_status[])),
+  'the queue filters by status');
+select t.ok((select count(*) from public.admin_report_queue(p_limit := 1)) = 1, 'the queue honours the page size');
+select t.ok(not exists (select 1 from public.admin_report_queue(
+    p_after_created_at := (select created_at from public.admin_report_queue() q where q.id = (select id from mr)),
+    p_after_id := (select id from mr)) q where q.id = (select id from mr)),
+  'keyset pagination continues after the last row');
+select t.ok((public.admin_account('00000000-0000-0000-0000-000000000003') ->> 'open_reports')::int = 1
+  and not (public.admin_account('00000000-0000-0000-0000-000000000003') ?| array['approx_lat', 'approx_lng', 'city', 'photo_path']),
+  'the account summary shows reports but no location or photo');
+reset role;
+select t.ok(pg_get_function_result('public.admin_report_queue(public.report_status[], timestamptz, uuid, integer)'::regprocedure)
+  not like '%reporter%', 'the queue never returns who filed a report');
+
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-000000000003', '  x ') $q$)
+  like '%reason_required%', 'a suspension needs a reason');
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-00000000000e', 'testing') $q$)
+  like '%target_is_admin%', 'admins cannot be suspended from the panel');
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-0000000000ff', 'testing') $q$)
+  like '%account_not_found%', 'suspending an unknown account fails');
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-000000000003', ' fake photos ') $q$) is null,
+  'an admin suspends an account');
+select t.ok((select is_suspended and suspended_reason = 'fake photos' from public.profiles where id = '00000000-0000-0000-0000-000000000003'),
+  'the suspension stores the trimmed reason');
+select t.ok(t.err('authenticated', $q$ select public.admin_suspend_account('00000000-0000-0000-0000-000000000003', 'again') $q$)
+  like '%already_suspended%', 'an account cannot be suspended twice');
+select t.ok(exists (select 1 from public.moderation_log where action = 'suspend_account'
+  and admin_id = '00000000-0000-0000-0000-00000000000e' and target_user_id = '00000000-0000-0000-0000-000000000003'
+  and reason = 'fake photos'), 'the suspension is in the audit log');
+
+select t.ok(t.err('authenticated', $q$ select public.admin_unsuspend_account('00000000-0000-0000-0000-000000000003', 'appeal accepted') $q$) is null,
+  'an admin lifts a suspension');
+select t.ok((select not is_suspended and suspended_reason is null from public.profiles where id = '00000000-0000-0000-0000-000000000003'),
+  'the account is active again');
+select t.ok(exists (select 1 from public.blocks where blocker_id = '00000000-0000-0000-0000-000000000002'
+  and blocked_id = '00000000-0000-0000-0000-000000000003'), 'unsuspending does not undo the reporter''s block');
+select t.ok(exists (select 1 from public.moderation_log where action = 'unsuspend_account'
+  and details ->> 'previous_reason' = 'fake photos'), 'the unsuspension is logged with the earlier reason');
+select t.ok(t.err('authenticated', $q$ select public.admin_unsuspend_account('00000000-0000-0000-0000-000000000003', 'again') $q$)
+  like '%not_suspended%', 'an active account cannot be unsuspended');
+
+select t.ok(t.err('authenticated', $q$ select public.admin_hide_listing((select id from ml), 'contact details in text') $q$) is null,
+  'an admin hides a listing');
+select t.ok((select status from public.listings where id = (select id from ml)) = 'hidden', 'the listing is hidden');
+select t.ok(t.err('authenticated', $q$ select public.admin_hide_listing((select id from ml), 'again') $q$) like '%already_hidden%',
+  'a hidden listing cannot be hidden again');
+select t.as_user('00000000-0000-0000-0000-000000000003');
+select t.ok(t.err('authenticated', $q$ update public.listings set status = 'active' where owner_id = auth.uid() $q$)
+  like '%listing_hidden_by_moderation%', 'the owner cannot unhide it herself');
+select t.as_user('00000000-0000-0000-0000-00000000000e');
+select t.ok(t.err('authenticated', $q$ select public.admin_unhide_listing((select id from ml), 'text fixed') $q$) is null,
+  'an admin unhides a listing');
+select t.ok((select status from public.listings where id = (select id from ml)) = 'paused',
+  'unhiding brings the listing back paused');
+select t.ok(t.err('authenticated', $q$ select public.admin_unhide_listing((select id from ml), 'again') $q$) like '%not_hidden%',
+  'only hidden listings can be unhidden');
+
+select t.ok(t.err('authenticated', $q$ select public.admin_set_report_status((select id from mr), 'open') $q$) like '%invalid_status%',
+  'a report cannot be reopened from the panel');
+select t.ok(t.err('authenticated', $q$ select public.admin_set_report_status((select id from mr), 'resolved', 'handled') $q$) is null,
+  'an admin resolves a report');
+select t.ok((select status = 'resolved' and resolved_at is not null from public.reports where id = (select id from mr)),
+  'the report is closed with a timestamp');
+select t.ok(t.err('authenticated', $q$ select public.admin_set_report_status((select id from mr), 'resolved') $q$) like '%status_unchanged%',
+  'setting the same status twice fails');
+select t.ok(exists (select 1 from public.moderation_log where action = 'set_report_status'
+  and target_report_id = (select id from mr) and details = '{"from": "open", "to": "resolved"}'), 'the status change is logged');
+
+set role authenticated;
+select t.ok((select array_agg(action order by id desc) from public.admin_moderation_log()) =
+  array['set_report_status', 'unhide_listing', 'hide_listing', 'unsuspend_account', 'suspend_account']::public.moderation_action[],
+  'the audit log lists every action, newest first');
+select t.ok((select count(*) from public.admin_moderation_log(p_limit := 2)) = 2
+  and (select count(*) from public.admin_moderation_log(p_before_id := (select min(id) from public.admin_moderation_log(p_limit := 2)))) = 3,
+  'the audit log pages by id');
+select t.ok((select count(*) from public.admin_moderation_log(p_target_user_id := '00000000-0000-0000-0000-00000000000a')) = 0,
+  'the audit log filters by account');
+reset role;
+
+select t.ok(t.err('postgres', $q$ update public.moderation_log set reason = 'rewritten' $q$) like '%append_only%',
+  'nobody can rewrite the audit log');
+select t.ok(t.err('postgres', $q$ delete from public.moderation_log $q$) like '%append_only%',
+  'nobody can delete from the audit log');
+select t.ok(t.err('postgres', $q$ truncate public.moderation_log $q$) like '%append_only%',
+  'nobody can truncate the audit log');
+delete from auth.users where id = '00000000-0000-0000-0000-00000000000e';
+select t.ok((select count(*) from public.moderation_log where admin_id is null) = 5,
+  'the audit log survives the admin''s account being deleted');
+
 \echo 'all database tests passed'

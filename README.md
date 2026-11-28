@@ -15,6 +15,7 @@ Product plan: [Boston: product and architecture plan (MVP)](https://claude.ai/ar
 | Database schema, RLS, server functions | `supabase/migrations/` |
 | Database tests | `supabase/tests/`, `scripts/test-db.sh` |
 | Edge Functions | `supabase/functions/` |
+| Moderation panel (web, Vite + React) | `admin/` (see `admin/README.md`) |
 
 ### Security principles
 
@@ -74,6 +75,10 @@ supabase functions deploy video-cleanup --no-verify-jwt
 ```
 
 and in the SQL editor store the two Vault secrets the cron job reads: `select vault.create_secret('https://<project>.supabase.co', 'project_url'); select vault.create_secret('<same random>', 'video_cleanup_secret');`
+
+## Moderation
+
+Moderators use the separate web panel in `admin/`. Admins are rows in `admin_users`; each `admin_*` RPC checks that table and writes the action with its reason to the append-only `moderation_log`. Unsuspending never removes blocks. See `admin/README.md` for adding a moderator.
 
 ## Next
 
