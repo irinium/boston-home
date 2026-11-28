@@ -375,4 +375,76 @@ select t.ok(exists (select 1 from public.video_room_closures where room_name = '
   'and closes their rooms');
 update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
 
+-- ---------------------------------------------------------------- data export
+reset role;
+select t.as_user(null);
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000e1'), ('00000000-0000-0000-0000-0000000000e2');
+update public.profiles set display_name = 'Erika', verification_status = 'verified', photo_path = id || '/face.jpg'
+  where id = '00000000-0000-0000-0000-0000000000e1';
+update public.profiles set display_name = 'Freya Secret', verification_status = 'verified'
+  where id = '00000000-0000-0000-0000-0000000000e2';
+insert into public.listings (owner_id, status, title, country_code, city) values
+  ('00000000-0000-0000-0000-0000000000e1', 'draft', 'Erika listing', 'CH', 'Zürich'),
+  ('00000000-0000-0000-0000-0000000000e2', 'draft', 'Freya listing', 'CH', 'Basel');
+insert into public.connection_requests (listing_id, owner_id, requester_id, message, status)
+  select l.id, l.owner_id, '00000000-0000-0000-0000-0000000000e2', 'freya private words', 'accepted'
+  from public.listings l where l.owner_id = '00000000-0000-0000-0000-0000000000e1';
+insert into public.connection_requests (listing_id, owner_id, requester_id, message)
+  select l.id, l.owner_id, '00000000-0000-0000-0000-0000000000e1', 'erika hello'
+  from public.listings l where l.owner_id = '00000000-0000-0000-0000-0000000000e2';
+insert into public.meetings (request_id, owner_id, requester_id, starts_at, ends_at, video_room_name)
+  select r.id, r.owner_id, r.requester_id, now() + interval '2 days', now() + interval '2 days 1 hour', 'bh-export-secret-room'
+  from public.connection_requests r where r.owner_id = '00000000-0000-0000-0000-0000000000e1';
+insert into public.credit_ledger (user_id, delta, reason) values ('00000000-0000-0000-0000-0000000000e1', 3, 'launch_gift');
+insert into public.reports (reporter_id, reported_id, reason, details)
+  values ('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000e2', 'other', 'rude');
+
+create temp table ex (doc jsonb);
+grant select, insert on ex to service_role;
+
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.ok(t.err('authenticated', $q$ select public.export_user_data(auth.uid()) $q$) like '%permission denied%',
+  'clients cannot call export_user_data directly');
+select t.ok(t.err('anon', $q$ select public.export_user_data('00000000-0000-0000-0000-0000000000e1') $q$) like '%permission denied%',
+  'guests cannot call export_user_data');
+
+select t.ok(t.err('service_role', $q$
+  insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e1')
+$q$) is null, 'the service role exports one user');
+select t.ok((select doc #>> '{profile,display_name}' from ex) = 'Erika', 'the export has her profile');
+select t.ok((select doc #>> '{listing,title}' from ex) = 'Erika listing', 'and her listing');
+select t.ok((select not (doc -> 'listing' ? 'owner_id') from ex), 'without repeating the owner id');
+select t.ok((select jsonb_array_length(doc -> 'requests_sent') = 1 and doc #>> '{requests_sent,0,message}' = 'erika hello' from ex),
+  'requests she sent, with her own message');
+select t.ok((select jsonb_array_length(doc -> 'requests_received') = 1 and not (doc -> 'requests_received' -> 0 ? 'message') from ex),
+  'requests she received, without the sender''s message');
+select t.ok((select doc #>> '{meetings,0,role}' = 'host' and not (doc -> 'meetings' -> 0 ? 'requester_id') from ex),
+  'her meetings, with her role but not the other woman''s id');
+select t.ok((select doc #>> '{reports_filed,0,details}' = 'rude' and not (doc -> 'reports_filed' -> 0 ? 'reported_id') from ex),
+  'reports she filed, without who was reported');
+select t.ok((select (doc ->> 'blocked_accounts')::int = 1 from ex), 'only the number of accounts she blocked');
+select t.ok((select (doc #>> '{credits,balance}')::int = 3 and jsonb_array_length(doc #> '{credits,ledger}') = 1 from ex),
+  'her credit balance and ledger');
+select t.ok((select doc::text not like '%freya private words%' and doc::text not like '%Freya Secret%'
+  and doc::text not like '%bh-export-secret-room%' and doc::text not like '%0000000000e2%' from ex),
+  'nothing in the export identifies the other woman or the video room');
+
+truncate ex;
+select t.ok(t.err('service_role', $q$
+  insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e2')
+$q$) is null, 'the service role exports another user');
+select t.ok((select doc #>> '{profile,display_name}' = 'Freya Secret'
+  and jsonb_array_length(doc -> 'reports_filed') = 0 and doc::text not like '%erika hello%' from ex),
+  'another user''s export holds only her own data');
+
+select t.ok(t.err('service_role', $q$ select public.export_user_data('00000000-0000-0000-0000-0000000000ff') $q$)
+  like '%user_not_found%', 'an unknown user is refused');
+
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000e3');
+truncate ex;
+select t.err('service_role', $q$ insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e3') $q$);
+select t.ok((select doc -> 'listing' = 'null'::jsonb and doc -> 'meetings' = '[]'::jsonb
+  and (doc #>> '{credits,balance}')::int = 0 from ex), 'a new account exports empty lists, not nulls');
+reset role;
+
 \echo 'all database tests passed'

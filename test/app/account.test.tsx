@@ -120,3 +120,11 @@ it('sends only changed fields and keeps Save off until something changes', async
   await fireEvent.press(screen.getByText('Save'));
   expect(updateProfile).toHaveBeenCalledWith(ME, { languages: ['uk', 'en'] });
 });
+
+it('offers the data export and the legal pages', async () => {
+  signIn();
+  await render(<AccountScreen />);
+  expect(screen.getByText('Export my data')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByText('Privacy Policy'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/legal/privacy');
+});

@@ -9,6 +9,7 @@ import { MultiChoice, SingleChoice } from '@/components/choices';
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, Field, Screen } from '@/components/ui';
 import { Radius, Spacing } from '@/constants/theme';
+import { PrivacyCard } from '@/features/legal/components/privacy-card';
 import { deleteAccount, setProfilePhoto, signedPhotoUrls, updateProfile, uploadPhoto } from '@/lib/api';
 import { AGE_BANDS, LANGUAGES } from '@/lib/options';
 import { changedFields, fromAccount } from '@/lib/profile';
@@ -94,6 +95,7 @@ export default function AccountScreen() {
       </Card>
       <Button label={t('account.myListing')} onPress={() => router.push('/editor')} />
       <Button label={t('availability.open')} variant="secondary" onPress={() => router.push('/availability')} />
+      <PrivacyCard />
       <Button label={t('common.signOut')} variant="secondary" onPress={signOut} />
       <Button label={t('account.delete')} variant="danger" onPress={onDelete} />
       </ScrollView>

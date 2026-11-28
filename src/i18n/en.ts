@@ -240,4 +240,17 @@ export const en: Translation = {
       request_not_accepted: 'The request has not been accepted yet.',
     },
   },
+  legal: {
+    privacyTitle: 'Privacy Policy',
+    termsTitle: 'Terms of Use',
+    updated: 'Last updated: {{date}}',
+    draftNotice: 'Draft: this text is waiting for legal review and may change.',
+    signInNotice: 'By signing in you accept the Terms of Use and the Privacy Policy.',
+    section: 'Privacy and terms',
+    export: 'Export my data',
+    exportHint: 'A JSON file with everything we store about you. Photo links in it work for one hour.',
+    exporting: 'Preparing your data…',
+    exportDone: 'Your data is ready.',
+    exportError: 'Could not export your data. Please try again.',
+  },
 };

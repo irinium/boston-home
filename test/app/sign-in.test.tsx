@@ -57,3 +57,11 @@ it('ignores a cancelled sign-in but reports other errors', async () => {
   await fireEvent.press(screen.getByText('Apple'));
   expect(await screen.findByText(/Something went wrong/)).toBeOnTheScreen();
 });
+
+it('links to the Terms and the Privacy Policy before sign-in', async () => {
+  available.mockResolvedValue(false);
+  await render(<SignInScreen />);
+  expect(screen.getByText(/By signing in you accept/)).toBeOnTheScreen();
+  await fireEvent.press(screen.getByText('Terms of Use'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/legal/terms');
+});

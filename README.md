@@ -75,6 +75,16 @@ supabase functions deploy video-cleanup --no-verify-jwt
 
 and in the SQL editor store the two Vault secrets the cron job reads: `select vault.create_secret('https://<project>.supabase.co', 'project_url'); select vault.create_secret('<same random>', 'video_cleanup_secret');`
 
+## Data export and legal pages
+
+`supabase/functions/export-my-data` returns everything stored about the caller as one JSON file (GDPR art. 15 and 20, Swiss FADP). The database function `export_user_data` (service role only) decides what belongs to her: profile, listing, free time, requests, meetings, reports she filed, the number of accounts she blocked, credits and verification checks. It leaves out anything that identifies another woman (ids, names and messages of the other side, report snapshots, video room names). Photos come as signed links that expire after one hour. The use case is in `supabase/functions/_shared/export.ts` behind ports, like the video functions. In the app, My profile has an "Export my data" button (share sheet on mobile, download on web).
+
+The Privacy Policy and Terms of Use (`/legal/privacy`, `/legal/terms`, UA and EN) are plain data in `src/features/legal/content`. They are **drafts**: fill in the [bracketed] controller details, approve the text, then set `draft: false` to remove the draft notice.
+
+```bash
+supabase functions deploy export-my-data
+```
+
 ## Next
 
 - Selfie verification (Didit: liveness + face match) through an Edge Function and webhook, then turn on `selfie_verification_required`.
