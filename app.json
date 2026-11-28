@@ -23,7 +23,11 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "app.bostonhome"
+      "package": "app.bostonhome",
+      "blockedPermissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
+      ]
     },
     "web": {
       "output": "single",
@@ -42,6 +46,15 @@
         }
       ],
       "expo-apple-authentication",
+      "expo-iap",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Boston Home uses your approximate location only when you ask it to, to show listings nearby or to place your listing on the map. The exact point is never stored.",
+          "isAndroidBackgroundLocationEnabled": false,
+          "isIosBackgroundLocationEnabled": false
+        }
+      ],
       [
         "expo-image-picker",
         {

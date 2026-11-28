@@ -22,6 +22,8 @@ export function signIn(account: Partial<MyAccount> = {}) {
     verification_status: 'unverified',
     trusted: true,
     photo_path: `${ME}/face.jpg`,
+    age_band: '35_44',
+    languages: ['uk'],
     is_suspended: false,
     credits: 1,
     has_listing: false,
