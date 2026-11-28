@@ -2,10 +2,13 @@ import { render, screen } from '@testing-library/react-native';
 import { Text } from 'react-native';
 import * as RN from 'react-native';
 
-import { signIn, signOutState } from '../auth-mock';
+import { usePushRegistration } from '@/features/notifications';
+
+import { ME, signIn, signOutState } from '../auth-mock';
 import RootLayout from '@/app/_layout';
 
 jest.mock('@/providers/auth', () => require('../auth-mock'));
+jest.mock('@/features/notifications', () => ({ usePushRegistration: jest.fn() }));
 
 // The router mock renders a Stack.Screen's `headerRight`; here we only check that the
 // layout renders for both auth states and both color schemes without crashing.
@@ -23,4 +26,13 @@ it.each([
     </>,
   );
   expect(screen.getByText('layout ok')).toBeOnTheScreen();
+});
+
+it('registers this device for pushes once she is signed in', async () => {
+  signIn();
+  await render(<RootLayout />);
+  expect(usePushRegistration).toHaveBeenLastCalledWith(ME);
+  signOutState();
+  await render(<RootLayout />);
+  expect(usePushRegistration).toHaveBeenLastCalledWith(undefined);
 });
