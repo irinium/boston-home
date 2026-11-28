@@ -1,7 +1,17 @@
+import { EMPTY_DRAFT } from '@/lib/draft';
 import { supabase } from '@/lib/supabase';
 
 import {
+  addSlot,
   ApiError,
+  availability,
+  bookableStarts,
+  bookMeeting,
+  displayNames,
+  cancelMeeting,
+  deleteSlot,
+  myMeetings,
+  updateProfile,
   blockUser,
   deleteAccount,
   getMyListing,
@@ -46,7 +56,7 @@ const invoke = supabase.functions.invoke as jest.Mock;
 /** A chainable query builder whose terminal value is `result`. */
 function query(result: unknown) {
   const builder: Record<string, jest.Mock> & { then?: unknown } = {};
-  for (const m of ['select', 'order', 'limit', 'insert', 'update', 'upsert', 'eq', 'maybeSingle']) {
+  for (const m of ['select', 'order', 'limit', 'insert', 'update', 'upsert', 'eq', 'gt', 'in', 'maybeSingle']) {
     builder[m] = jest.fn(() => builder);
   }
   builder.then = (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) =>
@@ -63,8 +73,13 @@ describe('searchListings', () => {
     expect(rpc).toHaveBeenCalledWith('search_listings', {
       p_country: 'it',
       p_has_children: null,
+      p_i_have_children: null,
       p_no_pets: true,
       p_no_smoking: null,
+      p_age_bands: null,
+      p_languages: null,
+      p_living: null,
+      p_move_in: null,
       p_lat: null,
       p_lng: null,
       p_radius_km: null,
@@ -80,6 +95,18 @@ describe('searchListings', () => {
       searchListings({ hasChildren: true, noSmoking: true, lat: 1, lng: 2, radiusKm: 25, sort: 'nearest', offset: 20 }),
     ).resolves.toEqual([]);
     expect(rpc.mock.calls[0][1]).toMatchObject({ p_country: null, p_lat: 1, p_radius_km: 25, p_sort: 'nearest', p_offset: 20 });
+  });
+
+  it('sends list filters only when they have values', async () => {
+    rpc.mockResolvedValue({ data: [], error: null });
+    await searchListings({ ageBands: ['25_34'], languages: [], living: ['new_place'], moveIn: ['asap'], iHaveChildren: true });
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_age_bands: ['25_34'],
+      p_languages: null,
+      p_living: ['new_place'],
+      p_move_in: ['asap'],
+      p_i_have_children: true,
+    });
   });
 
   it('throws ApiError with the database code', async () => {
@@ -162,23 +189,18 @@ describe('listing and photos', () => {
   it('saveMyListing upserts, upper-cases the country and sets the status', async () => {
     const q = query({ error: null });
     from.mockReturnValue(q);
-    const draft = {
-      title: 't',
-      about: '',
-      looking_for: '',
-      country_code: 'it',
-      city: 'Roma',
-      has_children: false,
-      children_count: 0,
-      photo_paths: [],
-    };
+    const draft = { ...EMPTY_DRAFT, title: 't', country_code: 'it', city: 'Roma' };
     await saveMyListing('me', draft, true);
     expect(q.upsert).toHaveBeenCalledWith(
       expect.objectContaining({ owner_id: 'me', country_code: 'IT', status: 'active' }),
       { onConflict: 'owner_id' },
     );
-    await saveMyListing('me', draft, false);
-    expect(q.upsert).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'draft' }), { onConflict: 'owner_id' });
+    expect(q.upsert.mock.calls[0][0]).toMatchObject({ target_country_code: null, target_city: null });
+    await saveMyListing('me', { ...draft, target_country_code: ' pl', target_city: ' Kraków ' }, false);
+    expect(q.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'draft', target_country_code: 'PL', target_city: 'Kraków' }),
+      { onConflict: 'owner_id' },
+    );
   });
 
   it('uploadPhoto re-encodes and uploads into the user folder', async () => {
@@ -209,6 +231,91 @@ describe('listing and photos', () => {
     await expect(signedPhotoUrls('listing-photos', [])).resolves.toEqual([]);
     storageFrom.mockReturnValue({ createSignedUrls: jest.fn(async () => ({ data: null, error: null })) });
     await expect(signedPhotoUrls('listing-photos', ['a'])).resolves.toEqual([]);
+  });
+});
+
+describe('profile', () => {
+  it('updateProfile trims the name and stores an empty one as null', async () => {
+    const q = query({ error: null });
+    from.mockReturnValue(q);
+    await updateProfile('me', { display_name: '  Anna ', age_band: '35_44', languages: ['uk'] });
+    expect(q.update).toHaveBeenCalledWith({ display_name: 'Anna', age_band: '35_44', languages: ['uk'] });
+    await updateProfile('me', { display_name: '   ', age_band: null, languages: [] });
+    expect(q.update).toHaveBeenLastCalledWith({ display_name: null, age_band: null, languages: [] });
+    await updateProfile('me', { age_band: '25_34' });
+    expect(q.update).toHaveBeenLastCalledWith({ age_band: '25_34' });
+  });
+
+  it('displayNames maps ids to names and skips the query for none', async () => {
+    from.mockClear();
+    await expect(displayNames([])).resolves.toEqual({});
+    expect(from).not.toHaveBeenCalled();
+    const q = query({ data: [{ id: 'a', display_name: 'Anna' }, { id: 'b', display_name: null }], error: null });
+    from.mockReturnValue(q);
+    await expect(displayNames(['a', 'b'])).resolves.toEqual({ a: 'Anna', b: '' });
+    expect(q.in).toHaveBeenCalledWith('id', ['a', 'b']);
+    from.mockReturnValue(query({ data: null, error: null }));
+    await expect(displayNames(['a'])).resolves.toEqual({});
+  });
+});
+
+describe('availability and meetings', () => {
+  it('reads future slots of an owner', async () => {
+    const q = query({ data: [{ id: 's1' }], error: null });
+    q.gt = jest.fn(() => q);
+    from.mockReturnValue(q);
+    await expect(availability('owner')).resolves.toEqual([{ id: 's1' }]);
+    expect(from).toHaveBeenCalledWith('availability_slots');
+    expect(q.eq).toHaveBeenCalledWith('owner_id', 'owner');
+    expect(q.gt).toHaveBeenCalledWith('ends_at', expect.any(String));
+  });
+
+  it('returns no slots when there is no data', async () => {
+    const q = query({ data: null, error: null });
+    q.gt = jest.fn(() => q);
+    from.mockReturnValue(q);
+    await expect(availability('owner')).resolves.toEqual([]);
+  });
+
+  it('adds and deletes slots', async () => {
+    const q = query({ error: null });
+    q.delete = jest.fn(() => q);
+    from.mockReturnValue(q);
+    const start = new Date('2026-12-01T10:00:00Z');
+    const end = new Date('2026-12-01T12:00:00Z');
+    await addSlot('me', start, end);
+    expect(q.insert).toHaveBeenCalledWith({ owner_id: 'me', starts_at: start.toISOString(), ends_at: end.toISOString() });
+    await deleteSlot('s1');
+    expect(q.delete).toHaveBeenCalled();
+    expect(q.eq).toHaveBeenCalledWith('id', 's1');
+  });
+
+  it('lists scheduled meetings', async () => {
+    const q = query({ data: [{ id: 'm1' }], error: null });
+    from.mockReturnValue(q);
+    await expect(myMeetings()).resolves.toEqual([{ id: 'm1' }]);
+    expect(q.eq).toHaveBeenCalledWith('status', 'scheduled');
+    expect(q.gt).toHaveBeenCalledWith('starts_at', expect.any(String));
+    from.mockReturnValue(query({ data: null, error: null }));
+    await expect(myMeetings()).resolves.toEqual([]);
+  });
+
+  it('books and cancels meetings through RPCs', async () => {
+    rpc.mockResolvedValue({ data: 'm1', error: null });
+    const start = new Date('2026-12-01T10:00:00Z');
+    await expect(bookMeeting('r1', start)).resolves.toBe('m1');
+    expect(rpc).toHaveBeenCalledWith('book_meeting', { p_request_id: 'r1', p_starts_at: start.toISOString(), p_minutes: 60 });
+    rpc.mockResolvedValue({ error: null });
+    await cancelMeeting('m1');
+    expect(rpc).toHaveBeenLastCalledWith('cancel_meeting', { p_meeting_id: 'm1' });
+  });
+
+  it('reads bookable starts from the database', async () => {
+    rpc.mockResolvedValue({ data: ['2026-12-01T10:00:00+00:00'], error: null });
+    await expect(bookableStarts('r1')).resolves.toEqual([new Date('2026-12-01T10:00:00Z')]);
+    expect(rpc).toHaveBeenCalledWith('bookable_starts', { p_request_id: 'r1', p_minutes: 60 });
+    rpc.mockResolvedValue({ data: null, error: null });
+    await expect(bookableStarts('r1')).resolves.toEqual([]);
   });
 });
 

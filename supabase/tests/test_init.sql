@@ -259,6 +259,55 @@ select t.ok(public.contains_contact_info('мій тг anna'), 'filter: тг');
 select t.ok(public.contains_contact_info('@anna_kyiv'), 'filter: handle');
 select t.ok(not public.contains_contact_info('У мене двоє дітей, 4 і 7 років, і кіт.'), 'filter: no false positive on ordinary text');
 select t.ok(not public.contains_contact_info('Працюю в стартапі, люблю театр.'), 'filter: no false positive on "стартапі"');
+-- ---------------------------------------------------------------- my_account
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select 1 from public.my_account() a
+  where a ->> 'age_band' = '35_44' and a -> 'languages' = '["uk", "en"]'::jsonb and (a ->> 'trusted')::boolean $q$);
+select t.ok((select count(*) from seen) = 1, 'my_account returns age band, languages and trust');
+truncate seen;
+
+-- ---------------------------------------------------------------- free times, overlaps, completion
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001')) $q$);
+select t.ok((select n from seen) = 0, 'times overlapping a scheduled meeting are not offered');
+truncate seen;
+
+select t.as_user('00000000-0000-0000-0000-000000000001');
+select t.ok(t.err('authenticated', $q$
+  insert into public.availability_slots (owner_id, starts_at, ends_at)
+  values (auth.uid(), date_trunc('day', now()) + interval '2 days 11 hours', date_trunc('day', now()) + interval '2 days 13 hours')
+$q$) like '%slot_overlaps%', 'overlapping free-time slots are rejected');
+select t.ok(t.err('authenticated', $q$
+  insert into public.availability_slots (owner_id, starts_at, ends_at)
+  values (auth.uid(), date_trunc('day', now()) + interval '3 days 10 hours', date_trunc('day', now()) + interval '3 days 12 hours')
+$q$) is null, 'a separate slot is accepted');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001')) $q$);
+select t.ok((select n from seen) = 3, 'a free 2-hour slot offers three 60-minute starts');
+truncate seen;
+
+select t.as_user('00000000-0000-0000-0000-000000000002');
+select t.ok(t.err('authenticated', $q$ select * from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001'
+     and requester_id = '00000000-0000-0000-0000-00000000000b')) $q$) like '%request_not_found%',
+  'only the requester can list bookable times');
+
+select t.ok(t.err('authenticated', 'select public.complete_past_meetings()') like '%permission denied%',
+  'clients cannot run the completion job');
+reset role;
+update public.meetings set starts_at = now() - interval '13 hours', ends_at = now() - interval '12 hours'
+where requester_id = '00000000-0000-0000-0000-00000000000b' and status = 'scheduled';
+select t.ok(public.complete_past_meetings() = 1, 'meetings older than 12 hours are completed');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('authenticated', $q$
+  select public.book_meeting((select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001'),
+    date_trunc('day', now()) + interval '3 days 10 hours')
+$q$) is null, 'after a completed meeting the pair can book another one');
+
 -- ---------------------------------------------------------------- selfie check switch
 -- Launch phase (default): a profile photo is enough. With the switch on, only verified members count.
 reset role;
