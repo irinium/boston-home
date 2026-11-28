@@ -1,12 +1,15 @@
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Alert, FlatList, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Button, Card, Chip, Screen } from '@/components/ui';
 import { Spacing } from '@/constants/theme';
-import { cancelMeeting, displayNames, myMeetings, myRequests, respondToRequest } from '@/lib/api';
+import { cancelMeeting, displayNames, joinMeeting, myMeetings, myRequests, respondToRequest } from '@/lib/api';
+import { errorCode } from '@/lib/format';
+import { JOIN_ERRORS, joinState } from '@/lib/meeting-time';
 import type { ConnectionRequest, Meeting } from '@/lib/types';
 import { useAuth } from '@/providers/auth';
 
@@ -19,6 +22,13 @@ export default function InboxScreen() {
   const [items, setItems] = useState<ConnectionRequest[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
+  const [now, setNow] = useState(() => Date.now());
+
+  // Re-evaluate Join buttons every 30 s, so a room opens without leaving the screen.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   const load = useCallback(() => {
     myRequests().then(setItems).catch(() => setItems([]));
@@ -48,6 +58,24 @@ export default function InboxScreen() {
     load();
   };
 
+  const join = (id: string) =>
+    Alert.alert(t('meetings.joinTitle'), t('meetings.joinSafety'), [
+      { text: t('common.cancel'), style: 'cancel' },
+      {
+        text: t('meetings.join'),
+        onPress: async () => {
+          try {
+            await WebBrowser.openBrowserAsync(await joinMeeting(id));
+          } catch (e) {
+            const code = errorCode(e);
+            Alert.alert(code && JOIN_ERRORS.includes(code) ? t(`meetings.joinErrors.${code as 'too_early'}`) : t('common.error'));
+          }
+        },
+      },
+    ]);
+
+  const visible = meetings.filter((m) => joinState(m.starts_at, now) !== 'over');
+
   const confirm = (message: string, label: string, action: () => Promise<void>) =>
     Alert.alert(message, '', [
       { text: t('common.cancel'), style: 'cancel' },
@@ -56,14 +84,21 @@ export default function InboxScreen() {
 
   return (
     <Screen>
-      {meetings.length > 0 && (
+      {visible.length > 0 && (
         <Card>
           <ThemedText type="smallBold">{t('meetings.upcoming')}</ThemedText>
-          {meetings.map((m) => (
+          {visible.map((m) => (
             <View key={m.id} style={{ gap: Spacing.two }}>
               <ThemedText>
                 {[names[other(m)] || t('meetings.with'), when(m.starts_at)].join(' · ')}
               </ThemedText>
+              {joinState(m.starts_at, now) === 'open' ? (
+                <Button label={t('meetings.join')} onPress={() => join(m.id)} />
+              ) : (
+                <ThemedText type="small" themeColor="textSecondary">
+                  {t('meetings.opensAt')}
+                </ThemedText>
+              )}
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.two }}>
                 <Button
                   label={t('meetings.cancel')}

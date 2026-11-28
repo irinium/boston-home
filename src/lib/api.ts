@@ -249,6 +249,19 @@ export async function cancelMeeting(id: string): Promise<void> {
   fail(error);
 }
 
+/**
+ * A personal link into the meeting's private video room (Edge Function `meeting-join`).
+ * Throws ApiError with a code such as `too_early` or `meeting_over`.
+ */
+export async function joinMeeting(meetingId: string): Promise<string> {
+  const { data, error } = await supabase.functions.invoke('meeting-join', { body: { meeting_id: meetingId } });
+  if (error) {
+    const body = await (error as { context?: Response }).context?.json?.().catch(() => null);
+    throw new ApiError(body?.error ?? 'failed');
+  }
+  return (data as { url: string }).url;
+}
+
 /** Deletes photos and the account (Edge Function `delete-account`). */
 export async function deleteAccount(): Promise<void> {
   const { error } = await supabase.functions.invoke('delete-account', { method: 'POST' });

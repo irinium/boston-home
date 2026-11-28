@@ -220,6 +220,18 @@ export const en: Translation = {
     report: 'Report',
     upcoming: 'Upcoming meetings',
     with: 'Video meeting',
+    join: 'Join',
+    joinTitle: 'Before the call',
+    joinSafety:
+      'Don’t show documents, your address or car plates. Share contacts in the call chat only if you choose to. If something feels wrong, end the call and report.',
+    opensAt: 'The room opens 10 minutes before the start',
+    joinErrors: {
+      too_early: 'The room is not open yet: it opens 10 minutes before the start.',
+      meeting_over: 'This meeting is over.',
+      meeting_not_active: 'This meeting is no longer available.',
+      meeting_not_found: 'Meeting not found.',
+      video_unavailable: 'The video service is unavailable right now. Try again in a minute.',
+    },
     errors: {
       slot_taken: 'This time was just taken. Please pick another.',
       slot_unavailable: 'This time is no longer available.',
