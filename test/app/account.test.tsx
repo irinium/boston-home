@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { Alert } from 'react-native';
 
-import { deleteAccount, setProfilePhoto, signedPhotoUrls, uploadPhoto } from '@/lib/api';
+import { deleteAccount, setProfilePhoto, signedPhotoUrls, updateProfile, uploadPhoto } from '@/lib/api';
 
 import { ME, mockAuth, signIn, signOutState } from '../auth-mock';
 import { mockRouter } from '../expo-router-mock';
@@ -79,4 +79,52 @@ it('navigates, signs out and deletes the account after confirmation', async () =
   await act(async () => buttons[1].onPress!());
   expect(deleteAccount).toHaveBeenCalled();
   expect(mockRouter.dismissTo).toHaveBeenCalledWith('/');
+});
+
+it('edits and saves the name, age and languages', async () => {
+  signIn({ display_name: 'Anna', age_band: '35_44', languages: ['uk'] });
+  await render(<AccountScreen />);
+  await fireEvent.changeText(screen.getByLabelText(/^Name/), 'Anna K');
+  await fireEvent.press(screen.getByText('45–54'));
+  await fireEvent.press(screen.getByText('English'));
+  await fireEvent.press(screen.getByText('Українська'));
+  await fireEvent.press(screen.getByText('Save'));
+  expect(updateProfile).toHaveBeenCalledWith(ME, { display_name: 'Anna K', age_band: '45_54', languages: ['en'] });
+  expect(mockAuth.refreshAccount).toHaveBeenCalled();
+  expect(await screen.findByText('Saved')).toBeOnTheScreen();
+});
+
+it('shows an error when saving the profile fails, and opens free time', async () => {
+  signIn({ display_name: 'Anna' });
+  (updateProfile as jest.Mock).mockRejectedValueOnce(new Error('too short'));
+  await render(<AccountScreen />);
+  await fireEvent.changeText(screen.getByLabelText(/^Name/), 'Ann');
+  await fireEvent.press(screen.getByText('Save'));
+  expect(await screen.findByText(/Something went wrong/)).toBeOnTheScreen();
+  await fireEvent.press(screen.getByText('My free time'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/availability');
+});
+
+it('shows no profile form until the account is loaded', async () => {
+  signOutState();
+  await render(<AccountScreen />);
+  expect(screen.queryByText('Save')).toBeNull();
+});
+
+it('sends only changed fields and keeps Save off until something changes', async () => {
+  signIn({ display_name: 'Anna', age_band: '35_44', languages: ['uk'] });
+  await render(<AccountScreen />);
+  await fireEvent.press(screen.getByText('Save'));
+  expect(updateProfile).not.toHaveBeenCalled();
+  await fireEvent.press(screen.getByText('English'));
+  await fireEvent.press(screen.getByText('Save'));
+  expect(updateProfile).toHaveBeenCalledWith(ME, { languages: ['uk', 'en'] });
+});
+
+it('offers the data export and the legal pages', async () => {
+  signIn();
+  await render(<AccountScreen />);
+  expect(screen.getByText('Export my data')).toBeOnTheScreen();
+  await fireEvent.press(screen.getByText('Privacy Policy'));
+  expect(mockRouter.push).toHaveBeenCalledWith('/legal/privacy');
 });

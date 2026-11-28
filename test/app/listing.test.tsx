@@ -77,3 +77,39 @@ it('handles a listing row that is not visible and listings without optional text
   expect(screen.getByText('No children')).toBeOnTheScreen();
   expect(screen.queryByText('Block')).toBeNull();
 });
+
+it('shows household conditions as chips', async () => {
+  listingCache.put([
+    listing({
+      id: 'l3',
+      children_age_bands: ['4_11'],
+      partner_children: 'welcome',
+      pets: ['cat'],
+      pet_allergy: true,
+      smoking: 'outside_only',
+      alcohol: 'no',
+      diet: 'vegetarian',
+      chronotype: 'night',
+      work_mode: 'shifts',
+      living_arrangement: 'my_place',
+      relocation: 'no',
+      move_in: '3_6_months',
+      separate_rooms: true,
+      expenses: 'proportional',
+    }),
+  ]);
+  setParams({ id: 'l3' });
+  await render(<ListingScreen />);
+  for (const text of ['Conditions', '4–11 years', 'Partner’s children welcome', 'Cat', 'Pet allergy', 'Smoke outside only',
+    'Don’t drink', 'Vegetarian', 'Night owl', 'Shifts', 'At my place', 'Not moving', 'In 3–6 months', 'Separate rooms',
+    'In proportion to income']) {
+    expect(screen.getByText(text)).toBeOnTheScreen();
+  }
+});
+
+it('hides the conditions card when nothing is set', async () => {
+  listingCache.put([listing({ id: 'l4', smoking: null })]);
+  setParams({ id: 'l4' });
+  await render(<ListingScreen />);
+  expect(screen.queryByText('Conditions')).toBeNull();
+});

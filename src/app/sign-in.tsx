@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 
 import { ThemedText } from '@/components/themed-text';
 import { Screen } from '@/components/ui';
+import { LegalLinks } from '@/features/legal/components/legal-links';
 import { useAuth } from '@/providers/auth';
 
 export default function SignInScreen() {
@@ -44,6 +45,7 @@ export default function SignInScreen() {
         <ThemedText themeColor="textSecondary">{t('auth.unavailable')}</ThemedText>
       )}
       {error && <ThemedText themeColor="danger">{t('common.error')}</ThemedText>}
+      <LegalLinks notice={t('legal.signInNotice')} />
     </Screen>
   );
 }

@@ -23,8 +23,8 @@ exception when others then
   reset role;
   return sqlerrm;
 end $$;
-grant usage on schema t to anon, authenticated;
-grant execute on all functions in schema t to anon, authenticated;
+grant usage on schema t to anon, authenticated, service_role;
+grant execute on all functions in schema t to anon, authenticated, service_role;
 
 -- Fixed ids
 insert into auth.users (id, created_at) values
@@ -92,7 +92,7 @@ select t.ok(t.err('authenticated', $q$
 $q$) is null, 'unverified account can prepare a draft');
 
 create temp table seen (n int);
-grant all on seen to anon, authenticated;
+grant all on seen to anon, authenticated, service_role;
 select t.err('authenticated', 'insert into seen select count(*) from public.listings');
 select t.ok((select n from seen) = 1, 'unverified account sees only her own listing directly');
 truncate seen;
@@ -259,6 +259,55 @@ select t.ok(public.contains_contact_info('мій тг anna'), 'filter: тг');
 select t.ok(public.contains_contact_info('@anna_kyiv'), 'filter: handle');
 select t.ok(not public.contains_contact_info('У мене двоє дітей, 4 і 7 років, і кіт.'), 'filter: no false positive on ordinary text');
 select t.ok(not public.contains_contact_info('Працюю в стартапі, люблю театр.'), 'filter: no false positive on "стартапі"');
+-- ---------------------------------------------------------------- my_account
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select 1 from public.my_account() a
+  where a ->> 'age_band' = '35_44' and a -> 'languages' = '["uk", "en"]'::jsonb and (a ->> 'trusted')::boolean $q$);
+select t.ok((select count(*) from seen) = 1, 'my_account returns age band, languages and trust');
+truncate seen;
+
+-- ---------------------------------------------------------------- free times, overlaps, completion
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001')) $q$);
+select t.ok((select n from seen) = 0, 'times overlapping a scheduled meeting are not offered');
+truncate seen;
+
+select t.as_user('00000000-0000-0000-0000-000000000001');
+select t.ok(t.err('authenticated', $q$
+  insert into public.availability_slots (owner_id, starts_at, ends_at)
+  values (auth.uid(), date_trunc('day', now()) + interval '2 days 11 hours', date_trunc('day', now()) + interval '2 days 13 hours')
+$q$) like '%slot_overlaps%', 'overlapping free-time slots are rejected');
+select t.ok(t.err('authenticated', $q$
+  insert into public.availability_slots (owner_id, starts_at, ends_at)
+  values (auth.uid(), date_trunc('day', now()) + interval '3 days 10 hours', date_trunc('day', now()) + interval '3 days 12 hours')
+$q$) is null, 'a separate slot is accepted');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.err('authenticated', $q$ insert into seen select count(*) from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001')) $q$);
+select t.ok((select n from seen) = 3, 'a free 2-hour slot offers three 60-minute starts');
+truncate seen;
+
+select t.as_user('00000000-0000-0000-0000-000000000002');
+select t.ok(t.err('authenticated', $q$ select * from public.bookable_starts(
+  (select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001'
+     and requester_id = '00000000-0000-0000-0000-00000000000b')) $q$) like '%request_not_found%',
+  'only the requester can list bookable times');
+
+select t.ok(t.err('authenticated', 'select public.complete_past_meetings()') like '%permission denied%',
+  'clients cannot run the completion job');
+reset role;
+update public.meetings set starts_at = now() - interval '13 hours', ends_at = now() - interval '12 hours'
+where requester_id = '00000000-0000-0000-0000-00000000000b' and status = 'scheduled';
+select t.ok(public.complete_past_meetings() = 1, 'meetings older than 12 hours are completed');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('authenticated', $q$
+  select public.book_meeting((select id from public.connection_requests where owner_id = '00000000-0000-0000-0000-000000000001'),
+    date_trunc('day', now()) + interval '3 days 10 hours')
+$q$) is null, 'after a completed meeting the pair can book another one');
+
 -- ---------------------------------------------------------------- selfie check switch
 -- Launch phase (default): a profile photo is enough. With the switch on, only verified members count.
 reset role;
@@ -270,4 +319,132 @@ update public.app_settings set selfie_verification_required = true;
 select t.ok(not public.is_trusted('00000000-0000-0000-0000-000000000001'), 'with the selfie check on, a photo alone is not enough');
 select t.ok(public.is_trusted('00000000-0000-0000-0000-000000000002'), 'with the selfie check on, verified members stay trusted');
 update public.app_settings set selfie_verification_required = false;
+-- ---------------------------------------------------------------- joining a video meeting
+reset role;
+create temp table jm as
+  select id from public.meetings where requester_id = '00000000-0000-0000-0000-00000000000b' and status = 'scheduled';
+grant select on jm to authenticated, service_role;
+select t.ok((select count(*) from jm) = 1, 'one scheduled meeting to join');
+
+select t.as_user('00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('authenticated', $q$ select * from public.meeting_for_join((select id from jm), auth.uid()) $q$)
+  like '%permission denied%', 'clients cannot call meeting_for_join directly');
+
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%too_early%', 'the room does not open days before the start');
+
+reset role;
+update public.meetings set starts_at = now() + interval '5 minutes', ends_at = now() + interval '35 minutes' where id = (select id from jm);
+select t.err('service_role', $q$ insert into seen select length(room_name) from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$);
+select t.ok((select n from seen) = 35, 'a participant gets a random room name 10 minutes before the start');
+truncate seen;
+select t.ok((select video_room_name from public.meetings where id = (select id from jm)) like 'bh-%', 'the room name is stored');
+select t.ok(t.err('service_role', $q$
+  do $d$ begin
+    if (select room_name from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-000000000001'))
+       is distinct from (select video_room_name from public.meetings where id = (select id from jm)) then
+      raise exception 'different room';
+    end if;
+  end $d$ $q$) is null, 'the other participant joins the same room');
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-000000000002') $q$)
+  like '%meeting_not_found%', 'strangers cannot join');
+
+update public.meetings set starts_at = now() - interval '13 hours', ends_at = now() - interval '12 hours 30 minutes' where id = (select id from jm);
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%meeting_over%', 'the room cannot be joined 12 hours after the start');
+
+update public.meetings set starts_at = now(), ends_at = now() + interval '30 minutes' where id = (select id from jm);
+insert into public.blocks (blocker_id, blocked_id) values ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-00000000000b');
+select t.ok(t.err('service_role', $q$ select * from public.meeting_for_join((select id from jm), '00000000-0000-0000-0000-00000000000b') $q$)
+  like '%meeting_not_active%', 'a block closes the meeting room');
+
+reset role;
+select t.ok((select status from public.meetings where id = (select id from jm)) = 'cancelled', 'the block cancelled the meeting');
+select t.ok(exists (select 1 from public.video_room_closures v join public.meetings m on m.video_room_name = v.room_name
+  where m.id = (select id from jm) and v.closed_at is null), 'and queued its video room for closing');
+select t.ok(t.err('authenticated', $q$ select * from public.video_room_closures $q$) like '%permission denied%',
+  'clients cannot read the closure queue');
+
+insert into public.meetings (request_id, owner_id, requester_id, starts_at, ends_at, status, video_room_name)
+  select request_id, owner_id, requester_id, now() + interval '1 day', now() + interval '1 day 1 hour', 'scheduled', 'bh-suspension-test'
+  from public.meetings where id = (select id from jm);
+update public.profiles set is_suspended = true where id = '00000000-0000-0000-0000-00000000000b';
+select t.ok((select status from public.meetings where video_room_name = 'bh-suspension-test') = 'cancelled',
+  'a suspension cancels her scheduled meetings');
+select t.ok(exists (select 1 from public.video_room_closures where room_name = 'bh-suspension-test'),
+  'and closes their rooms');
+update public.profiles set is_suspended = false where id = '00000000-0000-0000-0000-00000000000b';
+
+-- ---------------------------------------------------------------- data export
+reset role;
+select t.as_user(null);
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000e1'), ('00000000-0000-0000-0000-0000000000e2');
+update public.profiles set display_name = 'Erika', verification_status = 'verified', photo_path = id || '/face.jpg'
+  where id = '00000000-0000-0000-0000-0000000000e1';
+update public.profiles set display_name = 'Freya Secret', verification_status = 'verified'
+  where id = '00000000-0000-0000-0000-0000000000e2';
+insert into public.listings (owner_id, status, title, country_code, city) values
+  ('00000000-0000-0000-0000-0000000000e1', 'draft', 'Erika listing', 'CH', 'Zürich'),
+  ('00000000-0000-0000-0000-0000000000e2', 'draft', 'Freya listing', 'CH', 'Basel');
+insert into public.connection_requests (listing_id, owner_id, requester_id, message, status)
+  select l.id, l.owner_id, '00000000-0000-0000-0000-0000000000e2', 'freya private words', 'accepted'
+  from public.listings l where l.owner_id = '00000000-0000-0000-0000-0000000000e1';
+insert into public.connection_requests (listing_id, owner_id, requester_id, message)
+  select l.id, l.owner_id, '00000000-0000-0000-0000-0000000000e1', 'erika hello'
+  from public.listings l where l.owner_id = '00000000-0000-0000-0000-0000000000e2';
+insert into public.meetings (request_id, owner_id, requester_id, starts_at, ends_at, video_room_name)
+  select r.id, r.owner_id, r.requester_id, now() + interval '2 days', now() + interval '2 days 1 hour', 'bh-export-secret-room'
+  from public.connection_requests r where r.owner_id = '00000000-0000-0000-0000-0000000000e1';
+insert into public.credit_ledger (user_id, delta, reason) values ('00000000-0000-0000-0000-0000000000e1', 3, 'launch_gift');
+insert into public.reports (reporter_id, reported_id, reason, details)
+  values ('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000e2', 'other', 'rude');
+
+create temp table ex (doc jsonb);
+grant select, insert on ex to service_role;
+
+select t.as_user('00000000-0000-0000-0000-0000000000e1');
+select t.ok(t.err('authenticated', $q$ select public.export_user_data(auth.uid()) $q$) like '%permission denied%',
+  'clients cannot call export_user_data directly');
+select t.ok(t.err('anon', $q$ select public.export_user_data('00000000-0000-0000-0000-0000000000e1') $q$) like '%permission denied%',
+  'guests cannot call export_user_data');
+
+select t.ok(t.err('service_role', $q$
+  insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e1')
+$q$) is null, 'the service role exports one user');
+select t.ok((select doc #>> '{profile,display_name}' from ex) = 'Erika', 'the export has her profile');
+select t.ok((select doc #>> '{listing,title}' from ex) = 'Erika listing', 'and her listing');
+select t.ok((select not (doc -> 'listing' ? 'owner_id') from ex), 'without repeating the owner id');
+select t.ok((select jsonb_array_length(doc -> 'requests_sent') = 1 and doc #>> '{requests_sent,0,message}' = 'erika hello' from ex),
+  'requests she sent, with her own message');
+select t.ok((select jsonb_array_length(doc -> 'requests_received') = 1 and not (doc -> 'requests_received' -> 0 ? 'message') from ex),
+  'requests she received, without the sender''s message');
+select t.ok((select doc #>> '{meetings,0,role}' = 'host' and not (doc -> 'meetings' -> 0 ? 'requester_id') from ex),
+  'her meetings, with her role but not the other woman''s id');
+select t.ok((select doc #>> '{reports_filed,0,details}' = 'rude' and not (doc -> 'reports_filed' -> 0 ? 'reported_id') from ex),
+  'reports she filed, without who was reported');
+select t.ok((select (doc ->> 'blocked_accounts')::int = 1 from ex), 'only the number of accounts she blocked');
+select t.ok((select (doc #>> '{credits,balance}')::int = 3 and jsonb_array_length(doc #> '{credits,ledger}') = 1 from ex),
+  'her credit balance and ledger');
+select t.ok((select doc::text not like '%freya private words%' and doc::text not like '%Freya Secret%'
+  and doc::text not like '%bh-export-secret-room%' and doc::text not like '%0000000000e2%' from ex),
+  'nothing in the export identifies the other woman or the video room');
+
+truncate ex;
+select t.ok(t.err('service_role', $q$
+  insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e2')
+$q$) is null, 'the service role exports another user');
+select t.ok((select doc #>> '{profile,display_name}' = 'Freya Secret'
+  and jsonb_array_length(doc -> 'reports_filed') = 0 and doc::text not like '%erika hello%' from ex),
+  'another user''s export holds only her own data');
+
+select t.ok(t.err('service_role', $q$ select public.export_user_data('00000000-0000-0000-0000-0000000000ff') $q$)
+  like '%user_not_found%', 'an unknown user is refused');
+
+insert into auth.users (id) values ('00000000-0000-0000-0000-0000000000e3');
+truncate ex;
+select t.err('service_role', $q$ insert into ex select public.export_user_data('00000000-0000-0000-0000-0000000000e3') $q$);
+select t.ok((select doc -> 'listing' = 'null'::jsonb and doc -> 'meetings' = '[]'::jsonb
+  and (doc #>> '{credits,balance}')::int = 0 from ex), 'a new account exports empty lists, not nulls');
+reset role;
+
 \echo 'all database tests passed'
