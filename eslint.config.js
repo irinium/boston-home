@@ -4,7 +4,7 @@ const expoConfig = require('eslint-config-expo/flat');
 
 module.exports = defineConfig([
   expoConfig,
-  { ignores: ['dist/*', '.expo/*', 'coverage/*', 'supabase/functions/*'] },
+  { ignores: ['dist/*', '.expo/*', 'coverage/*', 'supabase/functions/*', 'admin/*'] },
   {
     // jest.mock factories and isolated module loads need require().
     files: ['**/*.test.{ts,tsx}', 'test/**/*'],
